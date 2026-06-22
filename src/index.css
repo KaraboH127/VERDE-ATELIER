@@ -1,0 +1,42 @@
+@import "tailwindcss";
+
+:root {
+  --surface: #ffffff;
+  --accent: #14532d;
+  --accent-strong: #0f3f22;
+  --accent-soft: #e7f4eb;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  font-family: "Inter", "SF Pro Text", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  color: #171717;
+  background: var(--surface);
+  line-height: 1.6;
+  overflow-x: hidden;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
