@@ -28,21 +28,57 @@ export function CheckoutPage() {
     []
   );
 
-  const onSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!canCheckout) {
-      navigate("/products");
+// Replace handleYocoPayment in CheckoutPage.tsx with this:
+
+const [paymentError, setPaymentError] = useState("");
+const [isProcessing, setIsProcessing] = useState(false);
+
+const handleYocoPayment = async () => {
+  setIsProcessing(true);
+  setPaymentError("");
+
+  try {
+    const response = await fetch(
+      `${import.meta.env.VITE_API_URL || "http://localhost:3001"}/api/create-checkout`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          amountInCents: total * 100, // e.g. R190 → 19000
+        }),
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      setPaymentError(data.error || "Could not start payment.");
+      setIsProcessing(false);
       return;
     }
 
-    if (step < 2) {
-      setStep((current) => current + 1);
-      return;
-    }
+    // Redirect the customer to Yoco's hosted payment page
+    window.location.href = data.redirectUrl;
 
-    setSuccess(true);
-    clearCart();
-  };
+  } catch {
+    setPaymentError("Could not connect to payment server.");
+    setIsProcessing(false);
+  }
+};
+
+// And update onSubmit:
+const onSubmit = (event: FormEvent<HTMLFormElement>) => {
+  event.preventDefault();
+
+  if (step === 0) {
+    setStep(1);
+    return;
+  }
+
+  if (step === 1) {
+    handleYocoPayment(); // no longer returns a promise you need to await here
+  }
+};
 
   return (
     <>
@@ -91,13 +127,20 @@ export function CheckoutPage() {
 
               {step === 1 ? (
                 <>
-                  <h2 className="text-xl font-semibold">Payment</h2>
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <Input required className="sm:col-span-2" placeholder="Card number" />
-                    <Input required placeholder="MM / YY" />
-                    <Input required placeholder="CVC" />
-                    <Input required className="sm:col-span-2" placeholder="Name on card" />
-                  </div>
+                  <h2 className="text-xl font-semibold">Ready to pay</h2>
+                  <p className="text-neutral-600">
+                    Clicking "Pay now" will take you to a secure Yoco-hosted payment page.
+                    You'll be brought back here once complete.
+                  </p>
+                  <p className="text-lg font-medium text-neutral-900">
+                    Total: {formatCurrency(total)}
+                  </p>
+                  {paymentError && (
+                    <p className="text-sm text-red-600">{paymentError}</p>
+                  )}
+                  {isProcessing && (
+                    <p className="text-sm text-neutral-500">Redirecting to payment...</p>
+                  )}
                 </>
               ) : null}
 
@@ -117,9 +160,15 @@ export function CheckoutPage() {
                 </>
               ) : null}
 
-              <Button type="submit" className="w-full sm:w-auto">
-                {step < 2 ? "Continue" : "Place order"}
-              </Button>
+                <Button type="submit" disabled={isProcessing} className="w-full sm:w-auto">
+                  {step === 0 ? "Continue" : isProcessing ? "Redirecting..." : "Pay now"}
+                </Button>
+                {paymentError && (
+                <p className="mt-3 text-sm text-red-600">{paymentError}</p>
+                )}
+                {isProcessing && (
+                  <p className="mt-3 text-sm text-neutral-500">Processing payment...</p>
+                )}
             </div>
 
             <aside className="h-fit rounded-2xl bg-neutral-50 p-6">
