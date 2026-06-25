@@ -2,14 +2,53 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import crypto from "crypto"; // ← new import
 
 dotenv.config();
 
 const app = express();
-app.use(express.json());
 app.use(cors());
+// ← express.json() is NOT here anymore
 
-// Step 1 of the new flow: React calls this to create a checkout session
+// ✅ Webhook route FIRST (needs raw body)
+app.post(
+  "/api/webhook",
+  express.raw({ type: "application/json" }),
+  (req, res) => {
+    const secret = process.env.YOCO_WEBHOOK_SECRET;
+    const signature = req.headers["x-yoco-signature"];
+
+    if (secret && signature) {
+      const expected = crypto
+        .createHmac("sha256", secret)
+        .update(req.body)
+        .digest("hex");
+
+      if (signature !== expected) {
+        console.log("❌ Invalid webhook signature");
+        return res.status(401).send("Invalid signature");
+      }
+    }
+
+    const event = JSON.parse(req.body.toString());
+    console.log("✅ Webhook received:", event.type);
+
+    if (event.type === "payment.succeeded") {
+      console.log("💰 Payment succeeded:", event.payload?.metadata);
+    }
+
+    if (event.type === "payment.failed") {
+      console.log("❌ Payment failed:", event.payload);
+    }
+
+    res.sendStatus(200);
+  }
+);
+
+// ✅ Now express.json() applies to everything below
+app.use(express.json());
+
+// Step 1: create checkout (unchanged)
 app.post("/api/create-checkout", async (req, res) => {
   const { amountInCents } = req.body;
 
@@ -23,7 +62,6 @@ app.post("/api/create-checkout", async (req, res) => {
       body: JSON.stringify({
         amount: amountInCents,
         currency: "ZAR",
-        // Where Yoco sends the customer AFTER payment
         successUrl: `${process.env.FRONTEND_URL}/order-success`,
         cancelUrl: `${process.env.FRONTEND_URL}/checkout`,
         failureUrl: `${process.env.FRONTEND_URL}/checkout?payment=failed`,
@@ -36,27 +74,11 @@ app.post("/api/create-checkout", async (req, res) => {
       return res.status(400).json({ error: data.displayMessage || "Could not create checkout" });
     }
 
-    // Send the redirectUrl back to React
     res.json({ redirectUrl: data.redirectUrl, checkoutId: data.id });
   } catch (error) {
     console.error("Create checkout error:", error);
     res.status(500).json({ error: "Server error" });
   }
-});
-
-// Step 2: Yoco calls THIS endpoint after payment (webhook)
-// You use this to confirm payment actually succeeded before fulfilling the order
-app.post("/api/webhook", express.raw({ type: "application/json" }), (req, res) => {
-  const event = JSON.parse(req.body);
-
-  console.log("Webhook received:", event.type);
-
-  if (event.type === "payment.succeeded") {
-    // TODO: mark order as paid in your database
-    console.log("Payment succeeded for checkout:", event.payload?.metadata);
-  }
-
-  res.sendStatus(200); // Always respond 200 so Yoco knows you got it
 });
 
 const PORT = process.env.PORT || 3001;
