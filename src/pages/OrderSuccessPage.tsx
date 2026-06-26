@@ -1,24 +1,14 @@
 import { useEffect } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { SEO } from "../components/SEO";
 import { Button } from "../components/ui/Button";
 import { useCart } from "../context/CartContext";
 
 export function OrderSuccessPage() {
   const { clearCart } = useCart();
-  const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
 
+  // Clear the cart when they land here
   useEffect(() => {
-    const checkoutId = searchParams.get("checkoutId");
-
-    // No checkoutId = didn't come from Yoco, send them away
-    if (!checkoutId) {
-      navigate("/", { replace: true });
-      return;
-    }
-
-    // Legitimate customer — clear their cart
     clearCart();
   }, []);
 
