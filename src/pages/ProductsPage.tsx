@@ -109,7 +109,7 @@ export function ProductsPage() {
             </div>
 
             <div>
-              <h2 className="text-sm font-medium text-neutral-900">Price up to ${maxPrice}</h2>
+              <h2 className="text-sm font-medium text-neutral-900">Price up to R{maxPrice}</h2>
               <input
                 type="range"
                 min={60}

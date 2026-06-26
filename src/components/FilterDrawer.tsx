@@ -76,7 +76,7 @@ export function FilterDrawer({
               </fieldset>
 
               <fieldset>
-                <legend className="text-sm font-medium text-neutral-900">Max price: ${maxPrice}</legend>
+                <legend className="text-sm font-medium text-neutral-900">Max price: R{maxPrice}</legend>
                 <input
                   type="range"
                   min={60}
