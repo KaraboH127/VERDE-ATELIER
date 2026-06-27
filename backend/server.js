@@ -43,7 +43,7 @@ app.post(
 
 // 💰 Payment succeeded — mark as paid then send confirmation email
 if (event.type === "payment.succeeded") {
-  const checkoutId = event.payload?.id;
+  const checkoutId = event.payload?.metadata?.checkoutId;
   console.log("💰 Payment succeeded for checkoutId:", checkoutId);
 
   // ✅ Retry up to 5 times with a 1 second delay between each attempt
