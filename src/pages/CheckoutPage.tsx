@@ -58,6 +58,7 @@ export function CheckoutPage() {
             city,
             postal,
             email,
+            items: detailedItems,
           }),
         }
       );
