@@ -316,7 +316,7 @@ async function sendConfirmationEmail(order, items) {
                       Questions about your order?
                     </p>
                     <p style="margin: 0; font-size: 13px; color: #95d5b2;">
-                      support@verdeatelier.com
+                      karabohlabangane@gmail.com
                     </p>
                     <div style="margin: 20px auto; width: 40px; height: 1px; background-color: #52796f;"></div>
                     <p style="margin: 0; font-size: 11px; color: #52796f; letter-spacing: 1px; text-transform: uppercase;">
