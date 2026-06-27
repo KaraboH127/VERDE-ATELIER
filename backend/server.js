@@ -41,40 +41,51 @@ app.post(
     const event = JSON.parse(req.body.toString());
     console.log("✅ Webhook received:", event.type);
 
-    // 💰 Payment succeeded — mark as paid then send confirmation email
-    if (event.type === "payment.succeeded") {
-      const checkoutId = event.payload?.id;
-      console.log("💰 Payment succeeded for checkoutId:", checkoutId);
+// 💰 Payment succeeded — mark as paid then send confirmation email
+if (event.type === "payment.succeeded") {
+  const checkoutId = event.payload?.id;
+  console.log("💰 Payment succeeded for checkoutId:", checkoutId);
 
-      const { data: updatedOrders, error: updateError } = await supabase
-        .from("orders")
-        .update({ status: "paid" })
-        .eq("yoco_order_id", checkoutId)
-        .select();
+  // ✅ Retry up to 5 times with a 1 second delay between each attempt
+  let updatedOrder = null;
 
-      if (updateError) {
-        console.error("❌ Supabase update error:", updateError);
-      } else {
-        const updatedOrder = updatedOrders?.[0];
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    const { data: updatedOrders, error: updateError } = await supabase
+      .from("orders")
+      .update({ status: "paid" })
+      .eq("yoco_order_id", checkoutId)
+      .select();
 
-        if (!updatedOrder) {
-          console.warn("⚠️ No order found for checkoutId:", checkoutId);
-        } else {
-          console.log("✅ Order marked as paid for:", checkoutId);
-
-          const { data: orderItems, error: itemsError } = await supabase
-            .from("order_items")
-            .select("*")
-            .eq("order_id", updatedOrder.id);
-
-          if (itemsError) {
-            console.error("❌ Could not fetch order items:", itemsError);
-          } else {
-            await sendConfirmationEmail(updatedOrder, orderItems);
-          }
-        }
-      }
+    if (updateError) {
+      console.error("❌ Supabase update error:", updateError);
+      break;
     }
+
+    if (updatedOrders?.length > 0) {
+      updatedOrder = updatedOrders[0];
+      console.log(`✅ Order marked as paid on attempt ${attempt}:`, checkoutId);
+      break;
+    }
+
+    console.warn(`⏳ Attempt ${attempt}: order not found yet, retrying in 1s...`);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  if (!updatedOrder) {
+    console.error("❌ Order still not found after all retries:", checkoutId);
+  } else {
+    const { data: orderItems, error: itemsError } = await supabase
+      .from("order_items")
+      .select("*")
+      .eq("order_id", updatedOrder.id);
+
+    if (itemsError) {
+      console.error("❌ Could not fetch order items:", itemsError);
+    } else {
+      await sendConfirmationEmail(updatedOrder, orderItems);
+    }
+  }
+}
 
     // ❌ Payment failed — update existing row to 'failed'
     if (event.type === "payment.failed") {
