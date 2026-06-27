@@ -46,29 +46,32 @@ app.post(
       const checkoutId = event.payload?.id;
       console.log("💰 Payment succeeded for checkoutId:", checkoutId);
 
-      const { data: updatedOrder, error: updateError } = await supabase
+      const { data: updatedOrders, error: updateError } = await supabase
         .from("orders")
         .update({ status: "paid" })
         .eq("yoco_order_id", checkoutId)
-        .select()   // ← gives us the row back so we can use it in the email
-        .single();
+        .select();
 
       if (updateError) {
         console.error("❌ Supabase update error:", updateError);
       } else {
-        console.log("✅ Order marked as paid for:", checkoutId);
+        const updatedOrder = updatedOrders?.[0];
 
-        // Fetch the order items for this order
-        const { data: orderItems, error: itemsError } = await supabase
-          .from("order_items")
-          .select("*")
-          .eq("order_id", updatedOrder.id);
-
-        if (itemsError) {
-          console.error("❌ Could not fetch order items:", itemsError);
+        if (!updatedOrder) {
+          console.warn("⚠️ No order found for checkoutId:", checkoutId);
         } else {
-          // Send confirmation email
-          await sendConfirmationEmail(updatedOrder, orderItems);
+          console.log("✅ Order marked as paid for:", checkoutId);
+
+          const { data: orderItems, error: itemsError } = await supabase
+            .from("order_items")
+            .select("*")
+            .eq("order_id", updatedOrder.id);
+
+          if (itemsError) {
+            console.error("❌ Could not fetch order items:", itemsError);
+          } else {
+            await sendConfirmationEmail(updatedOrder, orderItems);
+          }
         }
       }
     }
@@ -107,7 +110,7 @@ app.post("/api/create-checkout", async (req, res) => {
     city,
     postal,
     email,
-    items, // ← cart items from frontend
+    items,
   } = req.body;
 
   const amountInCents = amount * 100;
@@ -148,7 +151,7 @@ app.post("/api/create-checkout", async (req, res) => {
         amount: amountInCents,
         status: "pending",
       })
-      .select()   // ← gives us back the new row including its id
+      .select()
       .single();
 
     if (orderError) {
@@ -161,9 +164,9 @@ app.post("/api/create-checkout", async (req, res) => {
       order_id: newOrder.id,
       product_id: item.productId,
       product_name: item.product.name,
-      price: Math.round(item.product.price * 100),       // convert to cents
+      price: Math.round(item.product.price * 100),
       quantity: item.quantity,
-      line_total: Math.round(item.lineTotal * 100),       // convert to cents
+      line_total: Math.round(item.lineTotal * 100),
       color: item.color ?? null,
       size: item.size ?? null,
     }));
@@ -174,7 +177,6 @@ app.post("/api/create-checkout", async (req, res) => {
 
     if (itemsError) {
       console.error("❌ Supabase order_items insert error:", itemsError);
-      // Don't block the checkout — order row is saved, items can be investigated
     } else {
       console.log(`📦 Saved ${orderItems.length} item(s) for order:`, newOrder.id);
     }
@@ -203,7 +205,7 @@ async function sendConfirmationEmail(order, items) {
     .join("");
 
   const { error } = await resend.emails.send({
-    from: "Verde Atelier <onboarding@resend.dev>", // ← update this
+    from: "Verde Atelier <onboarding@resend.dev>",
     to: order.email,
     subject: "Your Verde Atelier order is confirmed 🌿",
     html: `
