@@ -206,11 +206,13 @@ async function sendConfirmationEmail(order, items) {
     .map(
       (item) => `
         <tr>
-          <td style="padding: 8px 0; border-bottom: 1px solid #e5e5e5;">${item.product_name}</td>
-          <td style="padding: 8px 0; border-bottom: 1px solid #e5e5e5;">${item.color ?? "—"}</td>
-          <td style="padding: 8px 0; border-bottom: 1px solid #e5e5e5;">${item.size ?? "—"}</td>
-          <td style="padding: 8px 0; border-bottom: 1px solid #e5e5e5; text-align: right;">x${item.quantity}</td>
-          <td style="padding: 8px 0; border-bottom: 1px solid #e5e5e5; text-align: right;">R${(item.line_total / 100).toFixed(2)}</td>
+          <td style="padding: 12px 8px; border-bottom: 1px solid #e8f0e8;">
+            <span style="font-weight: 500; color: #1a1a1a;">${item.product_name}</span>
+          </td>
+          <td style="padding: 12px 8px; border-bottom: 1px solid #e8f0e8; color: #555;">${item.color ?? "—"}</td>
+          <td style="padding: 12px 8px; border-bottom: 1px solid #e8f0e8; color: #555;">${item.size ?? "—"}</td>
+          <td style="padding: 12px 8px; border-bottom: 1px solid #e8f0e8; color: #555; text-align: center;">x${item.quantity}</td>
+          <td style="padding: 12px 8px; border-bottom: 1px solid #e8f0e8; color: #1a1a1a; text-align: right; font-weight: 500;">R${(item.line_total / 100).toFixed(2)}</td>
         </tr>`
     )
     .join("");
@@ -218,45 +220,118 @@ async function sendConfirmationEmail(order, items) {
   const { error } = await resend.emails.send({
     from: "Verde Atelier <onboarding@resend.dev>",
     to: order.email,
-    subject: `Your Verde Atelier order #${order.id} is confirmed 🌿`,  // ← order ID here
+    subject: `Your Verde Atelier order #${order.id} is confirmed 🌿`,
     html: `
-      <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; color: #1a1a1a;">
-        <h1 style="font-size: 24px; font-weight: 600; margin-bottom: 4px;">Order confirmed</h1>
-        <p style="color: #555; margin-top: 0;">Thank you, ${order.first_name}. Your order has been received.</p>
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+        <title>Order Confirmed</title>
+      </head>
+      <body style="margin: 0; padding: 0; background-color: #f4f7f4; font-family: 'Georgia', serif;">
 
-        <p style="font-size: 13px; color: #888; margin-top: 0;">
-          Order reference: <strong style="color: #1a1a1a;">#${order.id}</strong>
-        </p>
+        <!-- Wrapper -->
+        <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f4f7f4; padding: 40px 16px;">
+          <tr>
+            <td align="center">
+              <table width="600" cellpadding="0" cellspacing="0" style="max-width: 600px; width: 100%; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,0.06);">
 
-        <h2 style="font-size: 16px; font-weight: 600; margin-top: 32px;">Shipping to</h2>
-        <p style="color: #555; line-height: 1.6; margin: 0;">
-          ${order.first_name} ${order.last_name}<br/>
-          ${order.address}<br/>
-          ${order.city}, ${order.postal}
-        </p>
+                <!-- Header -->
+                <tr>
+                  <td style="background-color: #2d6a4f; padding: 40px 48px; text-align: center;">
+                    <p style="margin: 0 0 8px 0; font-size: 11px; letter-spacing: 3px; text-transform: uppercase; color: #95d5b2;">Order Confirmed</p>
+                    <h1 style="margin: 0; font-size: 32px; font-weight: 400; color: #ffffff; letter-spacing: 1px;">Verde Atelier</h1>
+                    <div style="margin: 20px auto 0; width: 40px; height: 2px; background-color: #95d5b2;"></div>
+                  </td>
+                </tr>
 
-        <h2 style="font-size: 16px; font-weight: 600; margin-top: 32px;">Order summary</h2>
-        <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
-          <thead>
-            <tr style="color: #888;">
-              <th style="text-align: left; padding-bottom: 8px;">Product</th>
-              <th style="text-align: left; padding-bottom: 8px;">Colour</th>
-              <th style="text-align: left; padding-bottom: 8px;">Size</th>
-              <th style="text-align: right; padding-bottom: 8px;">Qty</th>
-              <th style="text-align: right; padding-bottom: 8px;">Total</th>
-            </tr>
-          </thead>
-          <tbody>${itemRows}</tbody>
+                <!-- Thank you banner -->
+                <tr>
+                  <td style="background-color: #d8f3dc; padding: 24px 48px; text-align: center;">
+                    <p style="margin: 0; font-size: 15px; color: #2d6a4f; line-height: 1.6;">
+                      Thank you, <strong>${order.first_name}</strong>. Your order has been received and is being prepared.
+                    </p>
+                    <p style="margin: 8px 0 0; font-size: 13px; color: #52796f;">
+                      Order reference: <strong>#${order.id}</strong>
+                    </p>
+                  </td>
+                </tr>
+
+                <!-- Body -->
+                <tr>
+                  <td style="padding: 40px 48px;">
+
+                    <!-- Shipping details -->
+                    <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom: 36px;">
+                      <tr>
+                        <td>
+                          <p style="margin: 0 0 12px; font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: #2d6a4f; font-family: sans-serif;">Shipping To</p>
+                          <div style="background-color: #f4f7f4; border-left: 3px solid #2d6a4f; border-radius: 4px; padding: 16px 20px;">
+                            <p style="margin: 0; font-size: 15px; color: #1a1a1a; line-height: 1.8; font-family: sans-serif;">
+                              ${order.first_name} ${order.last_name}<br/>
+                              ${order.address}<br/>
+                              ${order.city}, ${order.postal}
+                            </p>
+                          </div>
+                        </td>
+                      </tr>
+                    </table>
+
+                    <!-- Order items -->
+                    <p style="margin: 0 0 12px; font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: #2d6a4f; font-family: sans-serif;">Order Summary</p>
+                    <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse; font-family: sans-serif;">
+                      <thead>
+                        <tr style="background-color: #f4f7f4;">
+                          <th style="padding: 10px 8px; text-align: left; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: #52796f; font-weight: 600;">Product</th>
+                          <th style="padding: 10px 8px; text-align: left; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: #52796f; font-weight: 600;">Colour</th>
+                          <th style="padding: 10px 8px; text-align: left; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: #52796f; font-weight: 600;">Size</th>
+                          <th style="padding: 10px 8px; text-align: center; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: #52796f; font-weight: 600;">Qty</th>
+                          <th style="padding: 10px 8px; text-align: right; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: #52796f; font-weight: 600;">Total</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${itemRows}
+                      </tbody>
+                    </table>
+
+                    <!-- Order total -->
+                    <table width="100%" cellpadding="0" cellspacing="0" style="margin-top: 8px; font-family: sans-serif;">
+                      <tr>
+                        <td style="padding: 16px 8px; text-align: right; border-top: 2px solid #2d6a4f;">
+                          <span style="font-size: 15px; font-weight: 700; color: #2d6a4f;">
+                            Order Total: R${(order.amount / 100).toFixed(2)}
+                          </span>
+                        </td>
+                      </tr>
+                    </table>
+
+                  </td>
+                </tr>
+
+                <!-- Footer -->
+                <tr>
+                  <td style="background-color: #2d6a4f; padding: 32px 48px; text-align: center;">
+                    <p style="margin: 0 0 8px; font-size: 13px; color: #d8f3dc; line-height: 1.6;">
+                      Questions about your order?
+                    </p>
+                    <p style="margin: 0; font-size: 13px; color: #95d5b2;">
+                      support@verdeatelier.com
+                    </p>
+                    <div style="margin: 20px auto; width: 40px; height: 1px; background-color: #52796f;"></div>
+                    <p style="margin: 0; font-size: 11px; color: #52796f; letter-spacing: 1px; text-transform: uppercase;">
+                      Verde Atelier &mdash; Thoughtfully made
+                    </p>
+                  </td>
+                </tr>
+
+              </table>
+            </td>
+          </tr>
         </table>
 
-        <div style="margin-top: 16px; text-align: right; font-size: 15px; font-weight: 600;">
-          Order total: R${(order.amount / 100).toFixed(2)}
-        </div>
-
-        <p style="margin-top: 40px; font-size: 13px; color: #888;">
-          If you have any questions, reply to this email or contact us at support@yourdomain.com
-        </p>
-      </div>
+      </body>
+      </html>
     `,
   });
 
