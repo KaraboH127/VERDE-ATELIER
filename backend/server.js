@@ -218,11 +218,15 @@ async function sendConfirmationEmail(order, items) {
   const { error } = await resend.emails.send({
     from: "Verde Atelier <onboarding@resend.dev>",
     to: order.email,
-    subject: "Your Verde Atelier order is confirmed 🌿",
+    subject: `Your Verde Atelier order #${order.id} is confirmed 🌿`,  // ← order ID here
     html: `
       <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; color: #1a1a1a;">
         <h1 style="font-size: 24px; font-weight: 600; margin-bottom: 4px;">Order confirmed</h1>
         <p style="color: #555; margin-top: 0;">Thank you, ${order.first_name}. Your order has been received.</p>
+
+        <p style="font-size: 13px; color: #888; margin-top: 0;">
+          Order reference: <strong style="color: #1a1a1a;">#${order.id}</strong>
+        </p>
 
         <h2 style="font-size: 16px; font-weight: 600; margin-top: 32px;">Shipping to</h2>
         <p style="color: #555; line-height: 1.6; margin: 0;">
