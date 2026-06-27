@@ -203,7 +203,7 @@ async function sendConfirmationEmail(order, items) {
     .join("");
 
   const { error } = await resend.emails.send({
-    from: "Verde Atelier <orders@yourdomain.com>", // ← update this
+    from: "Verde Atelier <onboarding@resend.dev>", // ← update this
     to: order.email,
     subject: "Your Verde Atelier order is confirmed 🌿",
     html: `
