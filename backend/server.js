@@ -2,19 +2,28 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import crypto from "crypto"; // ← new import
+import crypto from "crypto";
+import { createClient } from "@supabase/supabase-js"; // ← new
 
 dotenv.config();
 
 const app = express();
 app.use(cors());
-// ← express.json() is NOT here anymore
+
+// ✅ Supabase client
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
+// ✅ Temporary store for shipping details while customer is paying
+const pendingOrders = {};
 
 // ✅ Webhook route FIRST (needs raw body)
 app.post(
   "/api/webhook",
   express.raw({ type: "application/json" }),
-  (req, res) => {
+  async (req, res) => { // ← added async
     const secret = process.env.YOCO_WEBHOOK_SECRET;
     const signature = req.headers["x-yoco-signature"];
 
@@ -33,8 +42,36 @@ app.post(
     const event = JSON.parse(req.body.toString());
     console.log("✅ Webhook received:", event.type);
 
+    // 💰 Payment succeeded — save to Supabase
     if (event.type === "payment.succeeded") {
       console.log("💰 Payment succeeded:", event.payload?.metadata);
+
+      const checkoutId = event.payload?.id;
+      const shipping = pendingOrders[checkoutId];
+
+      if (shipping) {
+        const { error } = await supabase.from("orders").insert({
+          first_name: shipping.firstName,
+          last_name: shipping.lastName,
+          address: shipping.address,
+          city: shipping.city,
+          postal: shipping.postal,
+          email: shipping.email,
+          yoco_order_id: checkoutId,
+          amount: shipping.amount,
+        });
+
+        if (error) {
+          console.error("❌ Supabase insert error:", error);
+        } else {
+          console.log("✅ Order saved to Supabase for:", shipping.email);
+        }
+
+        // Clean up — no longer needed in memory
+        delete pendingOrders[checkoutId];
+      } else {
+        console.warn("⚠️ No shipping details found for checkoutId:", checkoutId);
+      }
     }
 
     if (event.type === "payment.failed") {
@@ -48,9 +85,11 @@ app.post(
 // ✅ Now express.json() applies to everything below
 app.use(express.json());
 
-// Step 1: create checkout (unchanged)
+// ✅ Create checkout — now also stores shipping details
 app.post("/api/create-checkout", async (req, res) => {
-  const { amountInCents } = req.body;
+  const { amount, currency, firstName, lastName, address, city, postal, email } = req.body;
+
+  const amountInCents = amount * 100;
 
   try {
     const response = await fetch("https://payments.yoco.com/api/checkouts", {
@@ -73,6 +112,19 @@ app.post("/api/create-checkout", async (req, res) => {
     if (!response.ok) {
       return res.status(400).json({ error: data.displayMessage || "Could not create checkout" });
     }
+
+    // ✅ Store shipping details using Yoco's checkout ID as the key
+    pendingOrders[data.id] = {
+      firstName,
+      lastName,
+      address,
+      city,
+      postal,
+      email,
+      amount: amountInCents, // storing in cents, consistent with Yoco
+    };
+
+    console.log("📦 Shipping details stored for checkoutId:", data.id);
 
     res.json({ redirectUrl: data.redirectUrl, checkoutId: data.id });
   } catch (error) {

@@ -7,7 +7,7 @@ import { Input } from "../components/ui/Input";
 import { useCart } from "../context/CartContext";
 import { formatCurrency } from "../utils/format";
 
-const steps = ["Shipping", "Payment", "Review"];
+const steps = ["Shipping", "Payment",];
 
 export function CheckoutPage() {
   const [step, setStep] = useState(0);
