@@ -3,7 +3,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import crypto from "crypto";
-import { createClient } from "@supabase/supabase-js"; // ← new
+import { createClient } from "@supabase/supabase-js";
 
 dotenv.config();
 
@@ -16,14 +16,11 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// ✅ Temporary store for shipping details while customer is paying
-const pendingOrders = {};
-
 // ✅ Webhook route FIRST (needs raw body)
 app.post(
   "/api/webhook",
   express.raw({ type: "application/json" }),
-  async (req, res) => { // ← added async
+  async (req, res) => {
     const secret = process.env.YOCO_WEBHOOK_SECRET;
     const signature = req.headers["x-yoco-signature"];
 
@@ -42,40 +39,38 @@ app.post(
     const event = JSON.parse(req.body.toString());
     console.log("✅ Webhook received:", event.type);
 
-    // 💰 Payment succeeded — save to Supabase
+    // 💰 Payment succeeded — update existing row to 'paid'
     if (event.type === "payment.succeeded") {
-      console.log("💰 Payment succeeded:", event.payload?.metadata);
-
       const checkoutId = event.payload?.id;
-      const shipping = pendingOrders[checkoutId];
+      console.log("💰 Payment succeeded for checkoutId:", checkoutId);
 
-      if (shipping) {
-        const { error } = await supabase.from("orders").insert({
-          first_name: shipping.firstName,
-          last_name: shipping.lastName,
-          address: shipping.address,
-          city: shipping.city,
-          postal: shipping.postal,
-          email: shipping.email,
-          yoco_order_id: checkoutId,
-          amount: shipping.amount,
-        });
+      const { error } = await supabase
+        .from("orders")
+        .update({ status: "paid" })
+        .eq("yoco_order_id", checkoutId);
 
-        if (error) {
-          console.error("❌ Supabase insert error:", error);
-        } else {
-          console.log("✅ Order saved to Supabase for:", shipping.email);
-        }
-
-        // Clean up — no longer needed in memory
-        delete pendingOrders[checkoutId];
+      if (error) {
+        console.error("❌ Supabase update error:", error);
       } else {
-        console.warn("⚠️ No shipping details found for checkoutId:", checkoutId);
+        console.log("✅ Order marked as paid for:", checkoutId);
       }
     }
 
+    // ❌ Payment failed — update existing row to 'failed'
     if (event.type === "payment.failed") {
-      console.log("❌ Payment failed:", event.payload);
+      const checkoutId = event.payload?.id;
+      console.log("❌ Payment failed for checkoutId:", checkoutId);
+
+      const { error } = await supabase
+        .from("orders")
+        .update({ status: "failed" })
+        .eq("yoco_order_id", checkoutId);
+
+      if (error) {
+        console.error("❌ Supabase update error:", error);
+      } else {
+        console.log("🗑️ Order marked as failed for:", checkoutId);
+      }
     }
 
     res.sendStatus(200);
@@ -85,7 +80,7 @@ app.post(
 // ✅ Now express.json() applies to everything below
 app.use(express.json());
 
-// ✅ Create checkout — now also stores shipping details
+// ✅ Create checkout — saves shipping to Supabase immediately as 'pending'
 app.post("/api/create-checkout", async (req, res) => {
   const { amount, currency, firstName, lastName, address, city, postal, email } = req.body;
 
@@ -113,20 +108,28 @@ app.post("/api/create-checkout", async (req, res) => {
       return res.status(400).json({ error: data.displayMessage || "Could not create checkout" });
     }
 
-    // ✅ Store shipping details using Yoco's checkout ID as the key
-    pendingOrders[data.id] = {
-      firstName,
-      lastName,
+    // ✅ Save order to Supabase straight away with status 'pending'
+    const { error: dbError } = await supabase.from("orders").insert({
+      first_name: firstName,
+      last_name: lastName,
       address,
       city,
       postal,
       email,
-      amount: amountInCents, // storing in cents, consistent with Yoco
-    };
+      yoco_order_id: data.id,
+      amount: amountInCents,
+      status: "pending",
+    });
 
-    console.log("📦 Shipping details stored for checkoutId:", data.id);
+    if (dbError) {
+      console.error("❌ Supabase insert error:", dbError);
+      return res.status(500).json({ error: "Could not save order" });
+    }
+
+    console.log("📦 Pending order saved for checkoutId:", data.id);
 
     res.json({ redirectUrl: data.redirectUrl, checkoutId: data.id });
+
   } catch (error) {
     console.error("Create checkout error:", error);
     res.status(500).json({ error: "Server error" });
