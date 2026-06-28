@@ -10,11 +10,13 @@ import { NotFoundPage } from "./pages/NotFoundPage";
 import { ProductDetailPage } from "./pages/ProductDetailPage";
 import { ProductsPage } from "./pages/ProductsPage";
 import { OrderSuccessPage } from "./pages/OrderSuccessPage";
+import { ScrollToTop } from "./components/ScrollToTop";
 
 export default function App() {
   return (
     <CartProvider>
       <BrowserRouter>
+        <ScrollToTop />
         <Routes>
           <Route element={<SiteLayout />}>
             <Route path="/" element={<HomePage />} />
