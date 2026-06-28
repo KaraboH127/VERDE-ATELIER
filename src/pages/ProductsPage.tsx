@@ -8,6 +8,7 @@ import { SEO } from "../components/SEO";
 import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Input";
 import { categories, products } from "../data/store";
+import { RecommendButton } from "../components/RecommendButton";
 
 type SortValue = "featured" | "price-low" | "price-high" | "popular";
 
@@ -136,6 +137,7 @@ export function ProductsPage() {
             ) : null}
           </div>
         </div>
+        <RecommendButton />
       </section>
 
       <FilterDrawer

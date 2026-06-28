@@ -5,6 +5,7 @@ import { ProductCard } from "../components/ProductCard";
 import { SEO } from "../components/SEO";
 import { Button } from "../components/ui/Button";
 import { benefits, categories, products, testimonials } from "../data/store";
+import { RecommendButton } from "../components/RecommendButton";
 
 const categoryVisuals: Record<string, string> = {
   Footwear:
@@ -100,6 +101,7 @@ export function HomePage() {
             <ProductCard key={product.id} product={product} />
           ))}
         </div>
+        <RecommendButton />
       </section>
 
       <section className="mx-auto grid w-full max-w-[1280px] gap-8 px-4 py-16 md:grid-cols-2 md:px-10 md:py-20">
