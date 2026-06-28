@@ -4,13 +4,24 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { FilterDrawer } from "../components/FilterDrawer";
 import { ProductCard } from "../components/ProductCard";
+import { RecommendButton } from "../components/RecommendButton";
 import { SEO } from "../components/SEO";
 import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Input";
 import { categories, products } from "../data/store";
-import { RecommendButton } from "../components/RecommendButton";
 
 type SortValue = "featured" | "price-low" | "price-high" | "popular";
+
+// ✅ Price range buckets
+export const PRICE_RANGES = [
+  { label: "All prices", min: 0, max: Infinity },
+  { label: "Under R200", min: 0, max: 200 },
+  { label: "R200 – R500", min: 200, max: 500 },
+  { label: "R500 – R1000", min: 500, max: 1000 },
+  { label: "R1000+", min: 1000, max: Infinity },
+];
+
+export type PriceRange = (typeof PRICE_RANGES)[number];
 
 export function ProductsPage() {
   const [searchParams] = useSearchParams();
@@ -18,32 +29,29 @@ export function ProductsPage() {
   const focusSearch = searchParams.get("focusSearch") === "1";
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState(initialCategory);
-  const [maxPrice, setMaxPrice] = useState(300);
+  const [priceRange, setPriceRange] = useState<PriceRange>(PRICE_RANGES[0]); // ✅ replaces maxPrice
   const [sort, setSort] = useState<SortValue>("featured");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (focusSearch) {
-      searchRef.current?.focus();
-    }
+    if (focusSearch) searchRef.current?.focus();
   }, [focusSearch]);
 
   const filteredProducts = useMemo(() => {
     return [...products]
-      .filter((product) => (category === "All" ? true : product.category === category))
-      .filter((product) => product.price <= maxPrice)
-      .filter((product) => {
+      .filter((p) => category === "All" || p.category === category)
+      .filter((p) => p.price >= priceRange.min && p.price <= priceRange.max) // ✅ uses range
+      .filter((p) => {
         if (!query.trim()) return true;
-        return `${product.name} ${product.description}`.toLowerCase().includes(query.toLowerCase());
+        return `${p.name} ${p.description}`.toLowerCase().includes(query.toLowerCase());
       })
       .sort((a, b) => {
         if (sort === "price-low") return a.price - b.price;
         if (sort === "price-high") return b.price - a.price;
-        if (sort === "popular") return b.popularity - a.popularity;
         return b.popularity - a.popularity;
       });
-  }, [category, maxPrice, query, sort]);
+  }, [category, priceRange, query, sort]);
 
   return (
     <>
@@ -63,20 +71,23 @@ export function ProductsPage() {
           <Input
             ref={searchRef}
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(e) => setQuery(e.target.value)}
             placeholder="Search products"
             aria-label="Search products"
             className="md:max-w-sm"
           />
-
           <div className="grid grid-cols-2 gap-3 md:flex">
-            <Button variant="secondary" className="w-full min-[1025px]:hidden" onClick={() => setDrawerOpen(true)}>
+            <Button
+              variant="secondary"
+              className="w-full min-[1025px]:hidden"
+              onClick={() => setDrawerOpen(true)}
+            >
               <Filter size={16} /> Filters
             </Button>
             <select
               aria-label="Sort products"
               value={sort}
-              onChange={(event) => setSort(event.target.value as SortValue)}
+              onChange={(e) => setSort(e.target.value as SortValue)}
               className="h-11 w-full min-w-0 rounded-full border border-neutral-300 px-4 text-sm"
             >
               <option value="featured">Featured</option>
@@ -88,12 +99,19 @@ export function ProductsPage() {
         </div>
 
         <div className="mt-10 grid gap-8 min-[1025px]:grid-cols-[260px_1fr]">
+
+          {/* ── Desktop sidebar ── */}
           <aside className="hidden space-y-8 min-[1025px]:block">
             <div>
               <h2 className="text-sm font-medium text-neutral-900">Category</h2>
               <div className="mt-3 space-y-3">
                 <label className="flex items-center gap-3 text-sm">
-                  <input type="radio" checked={category === "All"} onChange={() => setCategory("All")} />
+                  <input
+                    type="radio"
+                    checked={category === "All"}
+                    onChange={() => setCategory("All")}
+                    className="h-4 w-4"
+                  />
                   All
                 </label>
                 {categories.map((entry) => (
@@ -102,6 +120,7 @@ export function ProductsPage() {
                       type="radio"
                       checked={category === entry}
                       onChange={() => setCategory(entry)}
+                      className="h-4 w-4"
                     />
                     {entry}
                   </label>
@@ -109,35 +128,50 @@ export function ProductsPage() {
               </div>
             </div>
 
+            {/* ✅ Price range buckets — desktop */}
             <div>
-              <h2 className="text-sm font-medium text-neutral-900">Price up to R{maxPrice}</h2>
-              <input
-                type="range"
-                min={60}
-                max={300}
-                step={10}
-                value={maxPrice}
-                onChange={(event) => setMaxPrice(Number(event.target.value))}
-                className="mt-3 w-full accent-[var(--accent)]"
-              />
+              <h2 className="text-sm font-medium text-neutral-900">Price range</h2>
+              <div className="mt-3 space-y-3">
+                {PRICE_RANGES.map((range) => (
+                  <label key={range.label} className="flex items-center gap-3 text-sm">
+                    <input
+                      type="radio"
+                      name="price-range-desktop"
+                      checked={priceRange.label === range.label}
+                      onChange={() => setPriceRange(range)}
+                      className="h-4 w-4"
+                    />
+                    {range.label}
+                  </label>
+                ))}
+              </div>
             </div>
           </aside>
 
+          {/* ── Product grid ── */}
           <div>
             <p className="mb-5 text-sm text-neutral-500">{filteredProducts.length} products</p>
-            <motion.div layout className="grid grid-cols-2 gap-4 min-[641px]:grid-cols-3 min-[1025px]:grid-cols-4 md:gap-6 lg:gap-8">
+            <motion.div
+              layout
+              className="grid grid-cols-2 gap-4 min-[641px]:grid-cols-3 min-[1025px]:grid-cols-4 md:gap-6 lg:gap-8"
+            >
               {filteredProducts.map((product) => (
                 <motion.div key={product.id} layout>
                   <ProductCard product={product} />
                 </motion.div>
               ))}
             </motion.div>
-            {filteredProducts.length === 0 ? (
-              <p className="py-10 text-center text-neutral-600">No products found. Try adjusting your filters.</p>
-            ) : null}
+            {filteredProducts.length === 0 && (
+              <p className="py-10 text-center text-neutral-600">
+                No products found. Try adjusting your filters.
+              </p>
+            )}
           </div>
         </div>
-        <RecommendButton />
+
+        <div className="mt-12">
+          <RecommendButton />
+        </div>
       </section>
 
       <FilterDrawer
@@ -145,8 +179,10 @@ export function ProductsPage() {
         onClose={() => setDrawerOpen(false)}
         selectedCategory={category}
         onCategoryChange={setCategory}
-        maxPrice={maxPrice}
-        onPriceChange={setMaxPrice}
+        priceRange={priceRange}           // ✅ replaces maxPrice
+        onPriceRangeChange={(range) => {  // ✅ replaces onPriceChange
+          setPriceRange(range);
+        }}
       />
     </>
   );

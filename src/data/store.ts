@@ -65,7 +65,7 @@ export const products: Product[] = [
     slug: "summit-crossbody",
     name: "Summit Crossbody",
     category: "Accessories",
-    price: 140,
+    price: 1440,
     popularity: 82,
     rating: 4.6,
     reviewCount: 89,
@@ -150,7 +150,7 @@ export const products: Product[] = [
     colors: ["Olive", "Black"],
     sizes: ["40L"],
     images: [
-      "https://images.unsplash.com/photo-1553062407-98eeb64c6a45?auto=format&fit=crop&w=1400&q=80",
+      "https://m.media-amazon.com/images/I/71+WGGWWzZL._AC_SX679_.jpg",
       "https://images.unsplash.com/photo-1500534623283-312aade485b7?auto=format&fit=crop&w=1400&q=80",
       "https://images.unsplash.com/photo-1562183241-b937e95585b6?auto=format&fit=crop&w=1400&q=80",
     ],
@@ -289,7 +289,7 @@ export const products: Product[] = [
     colors: ["Ivory", "Moss", "Ink"],
     sizes: ["S", "M", "L", "XL", "XXL"],
     images: [
-      "https://images.unsplash.com/photo-1556821840-3a63f15732ce?auto=format&fit=crop&w=1400&q=80",
+      "https://thefoschini.vtexassets.com/arquivos/ids/225996426-1200-1600?v=639123779667330000&width=1200&height=1600&aspect=true 1200w",
       "https://images.unsplash.com/photo-1509942774463-acf339cf87d5?auto=format&fit=crop&w=1400&q=80",
       "https://images.unsplash.com/photo-1565084888279-aca607ecce0c?auto=format&fit=crop&w=1400&q=80",
     ],
