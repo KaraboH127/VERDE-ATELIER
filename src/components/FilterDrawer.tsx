@@ -55,7 +55,10 @@ export function FilterDrawer({
                       type="radio"
                       name="category"
                       checked={selectedCategory === "All"}
-                      onChange={() => onCategoryChange("All")}
+                      onChange={() => {
+                        onCategoryChange("All");
+                        onClose(); // ✅ close on select
+                      }}
                       className="h-4 w-4"
                     />
                     All
@@ -66,7 +69,10 @@ export function FilterDrawer({
                         type="radio"
                         name="category"
                         checked={selectedCategory === category}
-                        onChange={() => onCategoryChange(category)}
+                        onChange={() => {
+                          onCategoryChange(category);
+                          onClose(); // ✅ close on select
+                        }}
                         className="h-4 w-4"
                       />
                       {category}
@@ -80,10 +86,12 @@ export function FilterDrawer({
                 <input
                   type="range"
                   min={60}
-                  max={300}
+                  max={1800}  // ✅ updated to match your new highest price
                   step={10}
                   value={maxPrice}
                   onChange={(event) => onPriceChange(Number(event.target.value))}
+                  onMouseUp={onClose}    // ✅ close when user releases on desktop
+                  onTouchEnd={onClose}   // ✅ close when user releases on mobile
                   className="mt-3 w-full accent-[var(--accent)]"
                 />
               </fieldset>
