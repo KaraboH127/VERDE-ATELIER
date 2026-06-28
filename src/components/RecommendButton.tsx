@@ -1,6 +1,6 @@
 import { Sparkles } from "lucide-react";
 import { useState } from "react";
-import { RecommendModal } from "./RecommendModal";
+import { AIRecommendModal } from "./AIRecommendModal";
 
 export function RecommendButton() {
   const [open, setOpen] = useState(false);
@@ -15,7 +15,7 @@ export function RecommendButton() {
         Not sure what to buy?
       </button>
 
-      {open && <RecommendModal onClose={() => setOpen(false)} />}
+      {open && <AIRecommendModal onClose={() => setOpen(false)} />}
     </>
   );
 }

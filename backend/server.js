@@ -342,5 +342,64 @@ async function sendConfirmationEmail(order, items) {
   }
 }
 
+// ✅ AI recommendation route
+app.post("/api/recommend", async (req, res) => {
+  const { messages, products, orderStats } = req.body;
+
+  // Build a system prompt that gives the AI full context
+  const systemPrompt = `
+You are a helpful shopping assistant for Verde Atelier, a high-end sustainable fashion store.
+Your job is to recommend products to customers based on what they're looking for.
+
+Here is the full product catalogue:
+${JSON.stringify(products, null, 2)}
+
+Here is real sales data showing how many times each product has been ordered (use this to identify what's popular):
+${JSON.stringify(orderStats, null, 2)}
+
+Rules:
+- Only recommend products that exist in the catalogue above
+- When recommending a product, always mention its name, price (in Rands), and one or two reasons why it suits the customer
+- If a product is popular in the sales data, mention that customers love it
+- Keep responses friendly, concise, and helpful
+- If the customer's request is vague, ask one clarifying question
+- Never make up products that aren't in the catalogue
+- Format recommendations clearly, one product per line
+`;
+
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": process.env.FRONTEND_URL,
+        "X-Title": "Verde Atelier",
+      },
+      body: JSON.stringify({
+        model: "poolside/laguna-m1:free",
+        messages: [
+          { role: "system", content: systemPrompt },
+          ...messages,
+        ],
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error("❌ OpenRouter error:", data);
+      return res.status(500).json({ error: "AI service unavailable" });
+    }
+
+    const reply = data.choices?.[0]?.message?.content;
+    res.json({ reply });
+
+  } catch (error) {
+    console.error("❌ Recommend route error:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`Backend running on port ${PORT}`));
