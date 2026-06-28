@@ -377,7 +377,7 @@ Rules:
         "X-Title": "Verde Atelier",
       },
       body: JSON.stringify({
-        model: "poolside/laguna-m1:free",
+        model: "poolside/laguna-m.1:free",
         messages: [
           { role: "system", content: systemPrompt },
           ...messages,
