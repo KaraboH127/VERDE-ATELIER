@@ -120,11 +120,11 @@ export function SiteLayout() {
           </div>
 
           <div>
-            <p className="text-sm font-medium text-neutral-900">Get product drops and stories</p>
-            <form className="mt-3 flex flex-col gap-3 sm:flex-row sm:gap-2">
+            <p className="text-sm font-medium text-neutral-900">Coming soon: Get product drops and stories emails</p>
+            {/*<form className="mt-3 flex flex-col gap-3 sm:flex-row sm:gap-2">
               <Input type="email" aria-label="Email" placeholder="Email address" />
               <button className="h-11 rounded-full bg-[var(--accent)] px-4 text-sm text-white">Join</button>
-            </form>
+            </form>*/}
           </div>
         </div>
       </footer>
