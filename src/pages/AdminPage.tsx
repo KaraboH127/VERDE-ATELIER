@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
-import { Send, LogOut, ShoppingBag, TrendingUp, DollarSign, Package } from "lucide-react";
+import { Send, LogOut, ShoppingBag, TrendingUp, DollarSign, Package, Search, ChevronLeft } from "lucide-react";
+import { products as allProducts } from "../data/store";
 
 interface Order {
   id: number;
@@ -58,22 +59,22 @@ export function AdminPage() {
   const [authError, setAuthError] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
 
-  // Orders data
+  // Orders
   const [orders, setOrders] = useState<Order[]>([]);
   const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
   const [dataLoading, setDataLoading] = useState(false);
 
-  // Inventory data
+  // Inventory
   const [inventory, setInventory] = useState<InventoryRow[]>([]);
-  const [editingId, setEditingId] = useState<number | null>(null);
-  const [editQty, setEditQty] = useState<number>(0);
-  const [addForm, setAddForm] = useState({
-    product_id: "",
-    size: "",
-    color: "",
-    quantity: 0,
-  });
-  const [addLoading, setAddLoading] = useState(false);
+  const [inventorySearch, setInventorySearch] = useState("");
+
+  // Restock flow
+  const [selectedProduct, setSelectedProduct] = useState<typeof allProducts[0] | null>(null);
+  const [productSearch, setProductSearch] = useState("");
+  const [selectedCombos, setSelectedCombos] = useState<Set<string>>(new Set());
+  const [restockQty, setRestockQty] = useState<number>(10);
+  const [restockLoading, setRestockLoading] = useState(false);
+  const [restockSuccess, setRestockSuccess] = useState(false);
 
   // AI Chat
   const [messages, setMessages] = useState<Message[]>([
@@ -85,7 +86,7 @@ export function AdminPage() {
   // Tab
   const [tab, setTab] = useState<"orders" | "inventory" | "analyst">("orders");
 
-  // ── Check session on load ──────────────────────────
+  // ── Session on load ────────────────────────────────
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       if (data.session) {
@@ -138,49 +139,78 @@ export function AdminPage() {
     }
   };
 
-  // ── Update stock quantity ──────────────────────────
-  const handleUpdateStock = async (id: number) => {
-    await fetch(
-      `${import.meta.env.VITE_API_URL || "http://localhost:3001"}/api/admin/inventory/update`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: session.access_token, id, quantity: editQty }),
-      }
-    );
-    setEditingId(null);
-    fetchInventory(session.access_token);
+  // ── Restock selected combos ────────────────────────
+  const handleRestock = async () => {
+    if (!selectedProduct || selectedCombos.size === 0) return;
+    setRestockLoading(true);
+    setRestockSuccess(false);
+
+    for (const combo of selectedCombos) {
+      const [size, color] = combo.split("||");
+      await fetch(
+        `${import.meta.env.VITE_API_URL || "http://localhost:3001"}/api/admin/inventory/add`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            token: session.access_token,
+            product_id: selectedProduct.id,
+            size,
+            color,
+            quantity: restockQty,
+          }),
+        }
+      );
+    }
+
+    await fetchInventory(session.access_token);
+    setRestockLoading(false);
+    setRestockSuccess(true);
+    setSelectedCombos(new Set());
+    setTimeout(() => setRestockSuccess(false), 3000);
   };
 
-  // ── Add / upsert stock row ─────────────────────────
-  const handleAddStock = async () => {
-    setAddLoading(true);
-    await fetch(
-      `${import.meta.env.VITE_API_URL || "http://localhost:3001"}/api/admin/inventory/add`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: session.access_token, ...addForm }),
-      }
+  // ── Toggle a size+color combo ──────────────────────
+  const toggleCombo = (size: string, color: string) => {
+    const key = `${size}||${color}`;
+    setSelectedCombos((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  };
+
+  // ── Select / deselect all combos ───────────────────
+  const toggleAll = () => {
+    if (!selectedProduct) return;
+    const allKeys = selectedProduct.sizes.flatMap((size) =>
+      selectedProduct.colors.map((color) => `${size}||${color}`)
     );
-    setAddForm({ product_id: "", size: "", color: "", quantity: 0 });
-    setAddLoading(false);
-    fetchInventory(session.access_token);
+    if (selectedCombos.size === allKeys.length) {
+      setSelectedCombos(new Set());
+    } else {
+      setSelectedCombos(new Set(allKeys));
+    }
+  };
+
+  // ── Get stock for a specific combo ────────────────
+  const getStock = (productId: string, size: string, color: string): number => {
+    const row = inventory.find(
+      (r) => r.product_id === productId && r.size === size && r.color === color
+    );
+    return row?.quantity ?? 0;
   };
 
   // ── Auth ───────────────────────────────────────────
   const handleLogin = async () => {
     setAuthLoading(true);
     setAuthError("");
-
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-
     if (error) {
       setAuthError(error.message);
       setAuthLoading(false);
       return;
     }
-
     setSession(data.session);
     fetchData(data.session.access_token);
     fetchInventory(data.session.access_token);
@@ -199,13 +229,11 @@ export function AdminPage() {
   const sendMessage = async () => {
     const trimmed = input.trim();
     if (!trimmed || aiLoading) return;
-
     const userMessage: Message = { role: "user", content: trimmed };
     const updatedMessages = [...messages, userMessage];
     setMessages(updatedMessages);
     setInput("");
     setAiLoading(true);
-
     try {
       const res = await fetch(
         `${import.meta.env.VITE_API_URL || "http://localhost:3001"}/api/admin/analyse`,
@@ -239,8 +267,23 @@ export function AdminPage() {
   const paidOrders = orders.filter((o) => o.status === "paid");
   const totalRevenue = paidOrders.reduce((sum, o) => sum + o.amount, 0);
   const pendingOrders = orders.filter((o) => o.status === "pending").length;
-  const totalItems = orderItems.reduce((sum, i) => sum + i.quantity, 0);
   const outOfStockCount = inventory.filter((r) => r.quantity === 0).length;
+
+  // ── Filtered products for restock search ──────────
+  const filteredProducts = allProducts.filter((p) =>
+    p.name.toLowerCase().includes(productSearch.toLowerCase())
+  );
+
+  // ── Filtered inventory rows for inventory search ───
+  const filteredInventory = inventory.filter((row) => {
+    const product = allProducts.find((p) => p.id === row.product_id);
+    const name = product?.name.toLowerCase() ?? row.product_id;
+    return (
+      name.includes(inventorySearch.toLowerCase()) ||
+      row.size.toLowerCase().includes(inventorySearch.toLowerCase()) ||
+      row.color.toLowerCase().includes(inventorySearch.toLowerCase())
+    );
+  });
 
   // ── Login screen ───────────────────────────────────
   if (!session) {
@@ -305,7 +348,7 @@ export function AdminPage() {
 
       <main className="mx-auto max-w-[1280px] px-6 py-8 space-y-8">
 
-        {/* Stats — now includes out of stock count */}
+        {/* Stats */}
         <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
           {[
             { label: "Total revenue", value: `R${(totalRevenue / 100).toFixed(2)}`, icon: DollarSign },
@@ -378,9 +421,7 @@ export function AdminPage() {
                           <td className="px-4 py-3 text-neutral-500">{order.email}</td>
                           <td className="px-4 py-3 text-neutral-500">
                             {items.map((i) => (
-                              <div key={i.id}>
-                                {i.product_name} x{i.quantity}
-                              </div>
+                              <div key={i.id}>{i.product_name} x{i.quantity}</div>
                             ))}
                           </td>
                           <td className="px-4 py-3 font-medium text-neutral-900">
@@ -409,54 +450,209 @@ export function AdminPage() {
 
         {/* ── Inventory tab ── */}
         {tab === "inventory" && (
-          <div className="space-y-6">
+          <div className="space-y-8">
 
-            {/* Add / update stock form */}
-            <div className="rounded-2xl bg-white border border-neutral-100 shadow-sm p-6">
-              <h2 className="text-sm font-semibold text-neutral-900 mb-4">Add / update stock</h2>
-              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-                <input
-                  placeholder="Product ID (e.g. p1)"
-                  value={addForm.product_id}
-                  onChange={(e) => setAddForm((f) => ({ ...f, product_id: e.target.value }))}
-                  className="rounded-xl border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
-                />
-                <input
-                  placeholder="Size (e.g. M or 9)"
-                  value={addForm.size}
-                  onChange={(e) => setAddForm((f) => ({ ...f, size: e.target.value }))}
-                  className="rounded-xl border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
-                />
-                <input
-                  placeholder="Color (e.g. Forest)"
-                  value={addForm.color}
-                  onChange={(e) => setAddForm((f) => ({ ...f, color: e.target.value }))}
-                  className="rounded-xl border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
-                />
-                <input
-                  type="number"
-                  placeholder="Quantity"
-                  value={addForm.quantity}
-                  onChange={(e) => setAddForm((f) => ({ ...f, quantity: Number(e.target.value) }))}
-                  className="rounded-xl border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
-                />
-              </div>
-              <button
-                onClick={handleAddStock}
-                disabled={addLoading || !addForm.product_id || !addForm.size || !addForm.color}
-                className="mt-3 rounded-xl bg-[var(--accent)] px-5 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-50"
-              >
-                {addLoading ? "Saving..." : "Save stock"}
-              </button>
+            {/* ── RESTOCK FLOW ── */}
+            <div className="rounded-2xl bg-white border border-neutral-100 shadow-sm p-6 space-y-6">
+              <h2 className="text-sm font-semibold text-neutral-900">Restock products</h2>
+
+              {/* Step 1 — Pick a product */}
+              {!selectedProduct && (
+                <div className="space-y-4">
+                  <p className="text-xs text-neutral-500">Step 1 — Select a product</p>
+
+                  {/* Search */}
+                  <div className="flex items-center gap-2 rounded-xl border border-neutral-200 px-3 py-2 focus-within:border-[var(--accent)] transition">
+                    <Search size={14} className="text-neutral-400 flex-shrink-0" />
+                    <input
+                      type="text"
+                      placeholder="Search products..."
+                      value={productSearch}
+                      onChange={(e) => setProductSearch(e.target.value)}
+                      className="flex-1 text-sm bg-transparent outline-none text-neutral-800 placeholder:text-neutral-400"
+                    />
+                  </div>
+
+                  {/* Product grid */}
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
+                    {filteredProducts.map((product) => {
+                      const totalStock = inventory
+                        .filter((r) => r.product_id === product.id)
+                        .reduce((sum, r) => sum + r.quantity, 0);
+                      const hasOutOfStock = inventory.some(
+                        (r) => r.product_id === product.id && r.quantity === 0
+                      );
+
+                      return (
+                        <button
+                          key={product.id}
+                          onClick={() => {
+                            setSelectedProduct(product);
+                            setSelectedCombos(new Set());
+                            setRestockSuccess(false);
+                          }}
+                          className="group text-left overflow-hidden rounded-xl border border-neutral-200 hover:border-[var(--accent)] transition"
+                        >
+                          <div className="relative">
+                            <img
+                              src={product.images[0]}
+                              alt={product.name}
+                              className="aspect-[4/3] w-full object-cover"
+                            />
+                            {hasOutOfStock && (
+                              <span className="absolute top-2 left-2 rounded-full bg-red-500 px-2 py-0.5 text-xs font-medium text-white">
+                                Low stock
+                              </span>
+                            )}
+                          </div>
+                          <div className="p-3">
+                            <p className="text-xs font-medium text-neutral-900 leading-snug">{product.name}</p>
+                            <p className="mt-1 text-xs text-neutral-400">{totalStock} units total</p>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Step 2 — Pick combos + set quantity */}
+              {selectedProduct && (
+                <div className="space-y-5">
+                  {/* Back button */}
+                  <button
+                    onClick={() => { setSelectedProduct(null); setSelectedCombos(new Set()); }}
+                    className="flex items-center gap-1 text-sm text-neutral-500 hover:text-neutral-800 transition"
+                  >
+                    <ChevronLeft size={16} />
+                    Back to products
+                  </button>
+
+                  <p className="text-xs text-neutral-500">
+                    Step 2 — Choose which sizes and colours to restock for{" "}
+                    <strong className="text-neutral-900">{selectedProduct.name}</strong>
+                  </p>
+
+                  {/* Select all */}
+                  <div className="flex items-center justify-between">
+                    <button
+                      onClick={toggleAll}
+                      className="text-xs font-medium text-[var(--accent)] hover:opacity-70 transition"
+                    >
+                      {selectedCombos.size ===
+                      selectedProduct.sizes.length * selectedProduct.colors.length
+                        ? "Deselect all"
+                        : "Select all"}
+                    </button>
+                    <p className="text-xs text-neutral-400">
+                      {selectedCombos.size} selected
+                    </p>
+                  </div>
+
+                  {/* Size × Color grid */}
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm border-collapse">
+                      <thead>
+                        <tr>
+                          <th className="text-left text-xs font-medium text-neutral-500 pb-2 pr-4">
+                            Size / Colour
+                          </th>
+                          {selectedProduct.colors.map((color) => (
+                            <th
+                              key={color}
+                              className="text-center text-xs font-medium text-neutral-500 pb-2 px-2"
+                            >
+                              {color}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedProduct.sizes.map((size) => (
+                          <tr key={size} className="border-t border-neutral-100">
+                            <td className="py-2 pr-4 text-xs font-medium text-neutral-700">
+                              {size}
+                            </td>
+                            {selectedProduct.colors.map((color) => {
+                              const key = `${size}||${color}`;
+                              const stock = getStock(selectedProduct.id, size, color);
+                              const selected = selectedCombos.has(key);
+                              return (
+                                <td key={color} className="py-2 px-2 text-center">
+                                  <button
+                                    onClick={() => toggleCombo(size, color)}
+                                    className={`w-full rounded-lg border px-2 py-1.5 text-xs transition ${
+                                      selected
+                                        ? "border-[var(--accent)] bg-[var(--accent)] text-white"
+                                        : stock === 0
+                                        ? "border-red-200 bg-red-50 text-red-500"
+                                        : stock <= 3
+                                        ? "border-amber-200 bg-amber-50 text-amber-600"
+                                        : "border-neutral-200 bg-neutral-50 text-neutral-600"
+                                    }`}
+                                  >
+                                    {selected ? "✓" : stock === 0 ? "0" : stock}
+                                  </button>
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Quantity + restock button */}
+                  {selectedCombos.size > 0 && (
+                    <div className="flex items-center gap-4 pt-2 border-t border-neutral-100">
+                      <div className="flex items-center gap-2">
+                        <label className="text-xs text-neutral-500">Set quantity to:</label>
+                        <input
+                          type="number"
+                          min={1}
+                          value={restockQty}
+                          onChange={(e) => setRestockQty(Number(e.target.value))}
+                          className="w-20 rounded-xl border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+                        />
+                      </div>
+                      <button
+                        onClick={handleRestock}
+                        disabled={restockLoading}
+                        className="rounded-xl bg-[var(--accent)] px-5 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-50"
+                      >
+                        {restockLoading
+                          ? "Restocking..."
+                          : `Restock ${selectedCombos.size} variant${selectedCombos.size > 1 ? "s" : ""}`}
+                      </button>
+                      {restockSuccess && (
+                        <p className="text-sm text-green-600 font-medium">✅ Restocked!</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
-            {/* Stock table */}
+            {/* ── INVENTORY TABLE ── */}
             <div className="rounded-2xl bg-white border border-neutral-100 shadow-sm overflow-hidden">
+              <div className="p-4 border-b border-neutral-100">
+                <div className="flex items-center gap-2 rounded-xl border border-neutral-200 px-3 py-2 focus-within:border-[var(--accent)] transition">
+                  <Search size={14} className="text-neutral-400 flex-shrink-0" />
+                  <input
+                    type="text"
+                    placeholder="Search by product, size or colour..."
+                    value={inventorySearch}
+                    onChange={(e) => setInventorySearch(e.target.value)}
+                    className="flex-1 text-sm bg-transparent outline-none text-neutral-800 placeholder:text-neutral-400"
+                  />
+                </div>
+              </div>
+
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-neutral-50 border-b border-neutral-100">
                     <tr>
-                      {["Product ID", "Size", "Color", "Quantity", ""].map((h) => (
+                      {["Product", "Size", "Colour", "Stock"].map((h) => (
                         <th key={h} className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-neutral-500">
                           {h}
                         </th>
@@ -464,58 +660,47 @@ export function AdminPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-neutral-50">
-                    {inventory.map((row) => (
-                      <tr key={row.id} className="hover:bg-neutral-50 transition">
-                        <td className="px-4 py-3 text-neutral-700">{row.product_id}</td>
-                        <td className="px-4 py-3 text-neutral-700">{row.size}</td>
-                        <td className="px-4 py-3 text-neutral-700">{row.color}</td>
-                        <td className="px-4 py-3">
-                          {editingId === row.id ? (
-                            <input
-                              type="number"
-                              value={editQty}
-                              onChange={(e) => setEditQty(Number(e.target.value))}
-                              className="w-20 rounded-lg border border-neutral-200 px-2 py-1 text-sm outline-none focus:border-[var(--accent)]"
-                            />
-                          ) : (
-                            <span className={`font-medium ${
-                              row.quantity === 0
-                                ? "text-red-500"
-                                : row.quantity <= 3
-                                ? "text-amber-500"
-                                : "text-neutral-900"
-                            }`}>
-                              {row.quantity === 0 ? "Out of stock" : row.quantity}
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          {editingId === row.id ? (
-                            <div className="flex justify-end gap-2">
-                              <button
-                                onClick={() => handleUpdateStock(row.id)}
-                                className="rounded-lg bg-[var(--accent)] px-3 py-1 text-xs font-medium text-white"
-                              >
-                                Save
-                              </button>
-                              <button
-                                onClick={() => setEditingId(null)}
-                                className="rounded-lg border border-neutral-200 px-3 py-1 text-xs text-neutral-600"
-                              >
-                                Cancel
-                              </button>
+                    {filteredInventory.map((row) => {
+                      const product = allProducts.find((p) => p.id === row.product_id);
+                      return (
+                        <tr key={row.id} className="hover:bg-neutral-50 transition">
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-3">
+                              {product && (
+                                <img
+                                  src={product.images[0]}
+                                  alt={product.name}
+                                  className="h-8 w-8 rounded-lg object-cover flex-shrink-0"
+                                />
+                              )}
+                              <span className="text-neutral-700 font-medium">
+                                {product?.name ?? row.product_id}
+                              </span>
                             </div>
-                          ) : (
-                            <button
-                              onClick={() => { setEditingId(row.id); setEditQty(row.quantity); }}
-                              className="rounded-lg border border-neutral-200 px-3 py-1 text-xs text-neutral-600 hover:border-neutral-400 transition"
-                            >
-                              Edit
-                            </button>
-                          )}
+                          </td>
+                          <td className="px-4 py-3 text-neutral-600">{row.size}</td>
+                          <td className="px-4 py-3 text-neutral-600">{row.color}</td>
+                          <td className="px-4 py-3">
+                            <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                              row.quantity === 0
+                                ? "bg-red-100 text-red-600"
+                                : row.quantity <= 3
+                                ? "bg-amber-100 text-amber-600"
+                                : "bg-green-100 text-green-700"
+                            }`}>
+                              {row.quantity === 0 ? "Out of stock" : `${row.quantity} in stock`}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {filteredInventory.length === 0 && (
+                      <tr>
+                        <td colSpan={4} className="px-4 py-10 text-center text-sm text-neutral-400">
+                          No results found.
                         </td>
                       </tr>
-                    ))}
+                    )}
                   </tbody>
                 </table>
               </div>
