@@ -401,5 +401,103 @@ Rules:
   }
 });
 
+
+// ✅ Admin — fetch all orders + items
+app.post("/api/admin/data", async (req, res) => {
+  const { token } = req.body;
+
+  // Verify the user is logged in via Supabase
+  const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+
+  if (authError || !user) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const { data: orders, error: ordersError } = await supabase
+    .from("orders")
+    .select("*")
+    .order("created_at", { ascending: false });
+
+  if (ordersError) {
+    return res.status(500).json({ error: "Could not fetch orders" });
+  }
+
+  const { data: orderItems, error: itemsError } = await supabase
+    .from("order_items")
+    .select("*");
+
+  if (itemsError) {
+    return res.status(500).json({ error: "Could not fetch order items" });
+  }
+
+  res.json({ orders, orderItems });
+});
+
+// ✅ Admin — AI business analyst
+app.post("/api/admin/analyse", async (req, res) => {
+  const { token, messages, orders, orderItems } = req.body;
+
+  // Verify the user is logged in
+  const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+
+  if (authError || !user) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const systemPrompt = `
+You are a business analyst AI for Verde Atelier, a high-end sustainable fashion store.
+You have access to the store's complete order data.
+
+Here are all orders:
+${JSON.stringify(orders, null, 2)}
+
+Here are all order items:
+${JSON.stringify(orderItems, null, 2)}
+
+Your job is to help the store owner understand their business. You can:
+- Calculate total revenue (amounts are in cents, divide by 100 for Rands)
+- Identify best selling products
+- Spot trends in orders over time
+- Break down orders by status (paid, pending, failed)
+- Answer any business question about the data above
+
+Be concise, use Rands (R) for all amounts, and format numbers clearly.
+If asked something unrelated to the business data, politely redirect.
+`;
+
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": process.env.FRONTEND_URL,
+        "X-Title": "Verde Atelier Admin",
+      },
+      body: JSON.stringify({
+        model: "poolside/laguna-m.1:free",
+        messages: [
+          { role: "system", content: systemPrompt },
+          ...messages,
+        ],
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error("❌ OpenRouter error:", data);
+      return res.status(500).json({ error: "AI service unavailable" });
+    }
+
+    const reply = data.choices?.[0]?.message?.content;
+    res.json({ reply });
+
+  } catch (error) {
+    console.error("❌ Analyse route error:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`Backend running on port ${PORT}`));

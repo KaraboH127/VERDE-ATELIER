@@ -12,6 +12,7 @@ import { ProductsPage } from "./pages/ProductsPage";
 import { OrderSuccessPage } from "./pages/OrderSuccessPage";
 import { ScrollToTop } from "./components/ScrollToTop";
 import { AuthCallbackPage } from "./pages/AuthCallbackPage";
+import { AdminPage } from "./pages/AdminPage";
 
 export default function App() {
   return (
@@ -29,6 +30,7 @@ export default function App() {
             <Route path="/contact" element={<ContactPage />} />
             <Route path="*" element={<NotFoundPage />} />
             <Route path="/order-success" element={<OrderSuccessPage />} />
+            <Route path="/admin" element={<AdminPage />} />
             <Route path="/auth/callback" element={<AuthCallbackPage />} />
           </Route>
         </Routes>
