@@ -105,7 +105,7 @@ app.post(
 
     // ❌ Payment failed — update existing row to 'failed'
     if (event.type === "payment.failed") {
-      const checkoutId = event.payload?.metadata?.checkoutId;
+      const checkoutId = event.payload?.id;
       console.log("❌ Payment failed for checkoutId:", checkoutId);
 
       const { error } = await supabase
