@@ -41,55 +41,71 @@ app.post(
     const event = JSON.parse(req.body.toString());
     console.log("✅ Webhook received:", event.type);
 
-// 💰 Payment succeeded — mark as paid then send confirmation email
-if (event.type === "payment.succeeded") {
-  const checkoutId = event.payload?.metadata?.checkoutId;
-  console.log("💰 Payment succeeded for checkoutId:", checkoutId);
+    // 💰 Payment succeeded — mark as paid, decrement stock, send email
+    if (event.type === "payment.succeeded") {
+      const checkoutId = event.payload?.id;
+      console.log("💰 Payment succeeded for checkoutId:", checkoutId);
 
-  // ✅ Retry up to 5 times with a 1 second delay between each attempt
-  let updatedOrder = null;
+      // ✅ Retry up to 5 times with a 1 second delay between each attempt
+      let updatedOrder = null;
 
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    const { data: updatedOrders, error: updateError } = await supabase
-      .from("orders")
-      .update({ status: "paid" })
-      .eq("yoco_order_id", checkoutId)
-      .select();
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        const { data: updatedOrders, error: updateError } = await supabase
+          .from("orders")
+          .update({ status: "paid" })
+          .eq("yoco_order_id", checkoutId)
+          .select();
 
-    if (updateError) {
-      console.error("❌ Supabase update error:", updateError);
-      break;
+        if (updateError) {
+          console.error("❌ Supabase update error:", updateError);
+          break;
+        }
+
+        if (updatedOrders?.length > 0) {
+          updatedOrder = updatedOrders[0];
+          console.log(`✅ Order marked as paid on attempt ${attempt}:`, checkoutId);
+          break;
+        }
+
+        console.warn(`⏳ Attempt ${attempt}: order not found yet, retrying in 1s...`);
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+
+      if (!updatedOrder) {
+        console.error("❌ Order still not found after all retries:", checkoutId);
+      } else {
+        const { data: orderItems, error: itemsError } = await supabase
+          .from("order_items")
+          .select("*")
+          .eq("order_id", updatedOrder.id);
+
+        if (itemsError) {
+          console.error("❌ Could not fetch order items:", itemsError);
+        } else {
+          // ✅ Decrement inventory for each item purchased
+          for (const item of orderItems) {
+            const { error: stockError } = await supabase.rpc("decrement_stock", {
+              p_product_id: item.product_id,
+              p_size: item.size,
+              p_color: item.color,
+              p_quantity: item.quantity,
+            });
+
+            if (stockError) {
+              console.error("❌ Stock decrement error:", stockError);
+            } else {
+              console.log(`📦 Stock decremented for ${item.product_name} (${item.size}, ${item.color})`);
+            }
+          }
+
+          await sendConfirmationEmail(updatedOrder, orderItems);
+        }
+      }
     }
-
-    if (updatedOrders?.length > 0) {
-      updatedOrder = updatedOrders[0];
-      console.log(`✅ Order marked as paid on attempt ${attempt}:`, checkoutId);
-      break;
-    }
-
-    console.warn(`⏳ Attempt ${attempt}: order not found yet, retrying in 1s...`);
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-  }
-
-  if (!updatedOrder) {
-    console.error("❌ Order still not found after all retries:", checkoutId);
-  } else {
-    const { data: orderItems, error: itemsError } = await supabase
-      .from("order_items")
-      .select("*")
-      .eq("order_id", updatedOrder.id);
-
-    if (itemsError) {
-      console.error("❌ Could not fetch order items:", itemsError);
-    } else {
-      await sendConfirmationEmail(updatedOrder, orderItems);
-    }
-  }
-}
 
     // ❌ Payment failed — update existing row to 'failed'
     if (event.type === "payment.failed") {
-      const checkoutId = event.payload?.id;
+      const checkoutId = event.payload?.metadata?.checkoutId;
       console.log("❌ Payment failed for checkoutId:", checkoutId);
 
       const { error } = await supabase
@@ -230,14 +246,10 @@ async function sendConfirmationEmail(order, items) {
         <title>Order Confirmed</title>
       </head>
       <body style="margin: 0; padding: 0; background-color: #f4f7f4; font-family: 'Georgia', serif;">
-
-        <!-- Wrapper -->
         <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f4f7f4; padding: 40px 16px;">
           <tr>
             <td align="center">
               <table width="600" cellpadding="0" cellspacing="0" style="max-width: 600px; width: 100%; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,0.06);">
-
-                <!-- Header -->
                 <tr>
                   <td style="background-color: #2d6a4f; padding: 40px 48px; text-align: center;">
                     <p style="margin: 0 0 8px 0; font-size: 11px; letter-spacing: 3px; text-transform: uppercase; color: #95d5b2;">Order Confirmed</p>
@@ -245,8 +257,6 @@ async function sendConfirmationEmail(order, items) {
                     <div style="margin: 20px auto 0; width: 40px; height: 2px; background-color: #95d5b2;"></div>
                   </td>
                 </tr>
-
-                <!-- Thank you banner -->
                 <tr>
                   <td style="background-color: #d8f3dc; padding: 24px 48px; text-align: center;">
                     <p style="margin: 0; font-size: 15px; color: #2d6a4f; line-height: 1.6;">
@@ -257,12 +267,8 @@ async function sendConfirmationEmail(order, items) {
                     </p>
                   </td>
                 </tr>
-
-                <!-- Body -->
                 <tr>
                   <td style="padding: 40px 48px;">
-
-                    <!-- Shipping details -->
                     <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom: 36px;">
                       <tr>
                         <td>
@@ -277,8 +283,6 @@ async function sendConfirmationEmail(order, items) {
                         </td>
                       </tr>
                     </table>
-
-                    <!-- Order items -->
                     <p style="margin: 0 0 12px; font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: #2d6a4f; font-family: sans-serif;">Order Summary</p>
                     <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse; font-family: sans-serif;">
                       <thead>
@@ -294,8 +298,6 @@ async function sendConfirmationEmail(order, items) {
                         ${itemRows}
                       </tbody>
                     </table>
-
-                    <!-- Order total -->
                     <table width="100%" cellpadding="0" cellspacing="0" style="margin-top: 8px; font-family: sans-serif;">
                       <tr>
                         <td style="padding: 16px 8px; text-align: right; border-top: 2px solid #2d6a4f;">
@@ -305,11 +307,8 @@ async function sendConfirmationEmail(order, items) {
                         </td>
                       </tr>
                     </table>
-
                   </td>
                 </tr>
-
-                <!-- Footer -->
                 <tr>
                   <td style="background-color: #2d6a4f; padding: 32px 48px; text-align: center;">
                     <p style="margin: 0 0 8px; font-size: 13px; color: #d8f3dc; line-height: 1.6;">
@@ -324,12 +323,10 @@ async function sendConfirmationEmail(order, items) {
                     </p>
                   </td>
                 </tr>
-
               </table>
             </td>
           </tr>
         </table>
-
       </body>
       </html>
     `,
@@ -346,7 +343,6 @@ async function sendConfirmationEmail(order, items) {
 app.post("/api/recommend", async (req, res) => {
   const { messages, products, orderStats } = req.body;
 
-  // Build a system prompt that gives the AI full context
   const systemPrompt = `
 You are a helpful shopping assistant for Verde Atelier, a high-end sustainable fashion store.
 Your job is to recommend products to customers based on what they're looking for.
@@ -401,34 +397,25 @@ Rules:
   }
 });
 
-
 // ✅ Admin — fetch all orders + items
 app.post("/api/admin/data", async (req, res) => {
   const { token } = req.body;
 
-  // Verify the user is logged in via Supabase
   const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-
-  if (authError || !user) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
+  if (authError || !user) return res.status(401).json({ error: "Unauthorized" });
 
   const { data: orders, error: ordersError } = await supabase
     .from("orders")
     .select("*")
     .order("created_at", { ascending: false });
 
-  if (ordersError) {
-    return res.status(500).json({ error: "Could not fetch orders" });
-  }
+  if (ordersError) return res.status(500).json({ error: "Could not fetch orders" });
 
   const { data: orderItems, error: itemsError } = await supabase
     .from("order_items")
     .select("*");
 
-  if (itemsError) {
-    return res.status(500).json({ error: "Could not fetch order items" });
-  }
+  if (itemsError) return res.status(500).json({ error: "Could not fetch order items" });
 
   res.json({ orders, orderItems });
 });
@@ -437,12 +424,8 @@ app.post("/api/admin/data", async (req, res) => {
 app.post("/api/admin/analyse", async (req, res) => {
   const { token, messages, orders, orderItems } = req.body;
 
-  // Verify the user is logged in
   const { data: { user }, error: authError } = await supabase.auth.getUser(token);
-
-  if (authError || !user) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
+  if (authError || !user) return res.status(401).json({ error: "Unauthorized" });
 
   const systemPrompt = `
 You are a business analyst AI for Verde Atelier, a high-end sustainable fashion store.
@@ -497,6 +480,56 @@ If asked something unrelated to the business data, politely redirect.
     console.error("❌ Analyse route error:", error);
     res.status(500).json({ error: "Server error" });
   }
+});
+
+// ✅ Admin — fetch inventory
+app.post("/api/admin/inventory", async (req, res) => {
+  const { token } = req.body;
+
+  const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+  if (authError || !user) return res.status(401).json({ error: "Unauthorized" });
+
+  const { data, error } = await supabase
+    .from("inventory")
+    .select("*")
+    .order("product_id");
+
+  if (error) return res.status(500).json({ error: "Could not fetch inventory" });
+
+  res.json({ inventory: data });
+});
+
+// ✅ Admin — update a single inventory row
+app.post("/api/admin/inventory/update", async (req, res) => {
+  const { token, id, quantity } = req.body;
+
+  const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+  if (authError || !user) return res.status(401).json({ error: "Unauthorized" });
+
+  const { error } = await supabase
+    .from("inventory")
+    .update({ quantity })
+    .eq("id", id);
+
+  if (error) return res.status(500).json({ error: "Could not update stock" });
+
+  res.json({ success: true });
+});
+
+// ✅ Admin — add a new inventory row
+app.post("/api/admin/inventory/add", async (req, res) => {
+  const { token, product_id, size, color, quantity } = req.body;
+
+  const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+  if (authError || !user) return res.status(401).json({ error: "Unauthorized" });
+
+  const { error } = await supabase
+    .from("inventory")
+    .upsert({ product_id, size, color, quantity }, { onConflict: "product_id,size,color" });
+
+  if (error) return res.status(500).json({ error: "Could not add stock" });
+
+  res.json({ success: true });
 });
 
 const PORT = process.env.PORT || 3001;

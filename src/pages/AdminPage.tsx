@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import { Send, LogOut, ShoppingBag, TrendingUp, DollarSign, Package } from "lucide-react";
 
@@ -27,6 +26,14 @@ interface OrderItem {
   size: string;
 }
 
+interface InventoryRow {
+  id: number;
+  product_id: string;
+  size: string;
+  color: string;
+  quantity: number;
+}
+
 interface Message {
   role: "user" | "assistant";
   content: string;
@@ -44,8 +51,6 @@ I have access to all your order data. You can ask me things like:
 What would you like to know?`;
 
 export function AdminPage() {
-  const navigate = useNavigate();
-
   // Auth
   const [session, setSession] = useState<any>(null);
   const [email, setEmail] = useState("");
@@ -53,10 +58,22 @@ export function AdminPage() {
   const [authError, setAuthError] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
 
-  // Data
+  // Orders data
   const [orders, setOrders] = useState<Order[]>([]);
   const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
   const [dataLoading, setDataLoading] = useState(false);
+
+  // Inventory data
+  const [inventory, setInventory] = useState<InventoryRow[]>([]);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editQty, setEditQty] = useState<number>(0);
+  const [addForm, setAddForm] = useState({
+    product_id: "",
+    size: "",
+    color: "",
+    quantity: 0,
+  });
+  const [addLoading, setAddLoading] = useState(false);
 
   // AI Chat
   const [messages, setMessages] = useState<Message[]>([
@@ -66,18 +83,20 @@ export function AdminPage() {
   const [aiLoading, setAiLoading] = useState(false);
 
   // Tab
-  const [tab, setTab] = useState<"orders" | "analyst">("orders");
+  const [tab, setTab] = useState<"orders" | "inventory" | "analyst">("orders");
 
-  // Check session on load
+  // ── Check session on load ──────────────────────────
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
       if (data.session) {
         setSession(data.session);
         fetchData(data.session.access_token);
+        fetchInventory(data.session.access_token);
       }
     });
   }, []);
 
+  // ── Fetch orders ───────────────────────────────────
   const fetchData = async (token: string) => {
     setDataLoading(true);
     try {
@@ -101,6 +120,55 @@ export function AdminPage() {
     }
   };
 
+  // ── Fetch inventory ────────────────────────────────
+  const fetchInventory = async (token: string) => {
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL || "http://localhost:3001"}/api/admin/inventory`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token }),
+        }
+      );
+      const data = await res.json();
+      if (res.ok) setInventory(data.inventory);
+    } catch (err) {
+      console.error("Failed to fetch inventory:", err);
+    }
+  };
+
+  // ── Update stock quantity ──────────────────────────
+  const handleUpdateStock = async (id: number) => {
+    await fetch(
+      `${import.meta.env.VITE_API_URL || "http://localhost:3001"}/api/admin/inventory/update`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: session.access_token, id, quantity: editQty }),
+      }
+    );
+    setEditingId(null);
+    fetchInventory(session.access_token);
+  };
+
+  // ── Add / upsert stock row ─────────────────────────
+  const handleAddStock = async () => {
+    setAddLoading(true);
+    await fetch(
+      `${import.meta.env.VITE_API_URL || "http://localhost:3001"}/api/admin/inventory/add`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: session.access_token, ...addForm }),
+      }
+    );
+    setAddForm({ product_id: "", size: "", color: "", quantity: 0 });
+    setAddLoading(false);
+    fetchInventory(session.access_token);
+  };
+
+  // ── Auth ───────────────────────────────────────────
   const handleLogin = async () => {
     setAuthLoading(true);
     setAuthError("");
@@ -115,6 +183,7 @@ export function AdminPage() {
 
     setSession(data.session);
     fetchData(data.session.access_token);
+    fetchInventory(data.session.access_token);
     setAuthLoading(false);
   };
 
@@ -123,8 +192,10 @@ export function AdminPage() {
     setSession(null);
     setOrders([]);
     setOrderItems([]);
+    setInventory([]);
   };
 
+  // ── AI chat ────────────────────────────────────────
   const sendMessage = async () => {
     const trimmed = input.trim();
     if (!trimmed || aiLoading) return;
@@ -149,7 +220,6 @@ export function AdminPage() {
           }),
         }
       );
-
       const data = await res.json();
       setMessages((prev) => [
         ...prev,
@@ -170,8 +240,9 @@ export function AdminPage() {
   const totalRevenue = paidOrders.reduce((sum, o) => sum + o.amount, 0);
   const pendingOrders = orders.filter((o) => o.status === "pending").length;
   const totalItems = orderItems.reduce((sum, i) => sum + i.quantity, 0);
+  const outOfStockCount = inventory.filter((r) => r.quantity === 0).length;
 
-  // ── Login screen ──────────────────────────────────
+  // ── Login screen ───────────────────────────────────
   if (!session) {
     return (
       <div className="flex h-screen items-center justify-center bg-neutral-50 px-4">
@@ -181,7 +252,6 @@ export function AdminPage() {
             <h1 className="mt-1 text-2xl font-semibold text-neutral-900">Admin Dashboard</h1>
             <p className="mt-1 text-sm text-neutral-500">Sign in to manage your store.</p>
           </div>
-
           <div className="space-y-3">
             <input
               type="email"
@@ -212,7 +282,7 @@ export function AdminPage() {
     );
   }
 
-  // ── Dashboard ─────────────────────────────────────
+  // ── Dashboard ──────────────────────────────────────
   return (
     <div className="min-h-screen bg-neutral-50">
 
@@ -235,13 +305,13 @@ export function AdminPage() {
 
       <main className="mx-auto max-w-[1280px] px-6 py-8 space-y-8">
 
-        {/* Stats */}
+        {/* Stats — now includes out of stock count */}
         <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
           {[
             { label: "Total revenue", value: `R${(totalRevenue / 100).toFixed(2)}`, icon: DollarSign },
             { label: "Paid orders", value: paidOrders.length, icon: ShoppingBag },
             { label: "Pending orders", value: pendingOrders, icon: TrendingUp },
-            { label: "Items sold", value: totalItems, icon: Package },
+            { label: "Out of stock", value: outOfStockCount, icon: Package },
           ].map((stat) => (
             <div key={stat.label} className="rounded-2xl bg-white p-5 shadow-sm border border-neutral-100">
               <div className="flex items-center justify-between">
@@ -255,7 +325,7 @@ export function AdminPage() {
 
         {/* Tabs */}
         <div className="flex gap-2">
-          {(["orders", "analyst"] as const).map((t) => (
+          {(["orders", "inventory", "analyst"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -265,12 +335,12 @@ export function AdminPage() {
                   : "bg-white border border-neutral-200 text-neutral-600 hover:border-neutral-400"
               }`}
             >
-              {t === "orders" ? "Orders" : "AI Analyst"}
+              {t === "orders" ? "Orders" : t === "inventory" ? "Inventory" : "AI Analyst"}
             </button>
           ))}
         </div>
 
-        {/* Orders table */}
+        {/* ── Orders table ── */}
         {tab === "orders" && (
           <div className="rounded-2xl bg-white border border-neutral-100 shadow-sm overflow-hidden">
             {dataLoading ? (
@@ -337,11 +407,125 @@ export function AdminPage() {
           </div>
         )}
 
-        {/* AI Analyst */}
+        {/* ── Inventory tab ── */}
+        {tab === "inventory" && (
+          <div className="space-y-6">
+
+            {/* Add / update stock form */}
+            <div className="rounded-2xl bg-white border border-neutral-100 shadow-sm p-6">
+              <h2 className="text-sm font-semibold text-neutral-900 mb-4">Add / update stock</h2>
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                <input
+                  placeholder="Product ID (e.g. p1)"
+                  value={addForm.product_id}
+                  onChange={(e) => setAddForm((f) => ({ ...f, product_id: e.target.value }))}
+                  className="rounded-xl border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+                />
+                <input
+                  placeholder="Size (e.g. M or 9)"
+                  value={addForm.size}
+                  onChange={(e) => setAddForm((f) => ({ ...f, size: e.target.value }))}
+                  className="rounded-xl border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+                />
+                <input
+                  placeholder="Color (e.g. Forest)"
+                  value={addForm.color}
+                  onChange={(e) => setAddForm((f) => ({ ...f, color: e.target.value }))}
+                  className="rounded-xl border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+                />
+                <input
+                  type="number"
+                  placeholder="Quantity"
+                  value={addForm.quantity}
+                  onChange={(e) => setAddForm((f) => ({ ...f, quantity: Number(e.target.value) }))}
+                  className="rounded-xl border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[var(--accent)]"
+                />
+              </div>
+              <button
+                onClick={handleAddStock}
+                disabled={addLoading || !addForm.product_id || !addForm.size || !addForm.color}
+                className="mt-3 rounded-xl bg-[var(--accent)] px-5 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-50"
+              >
+                {addLoading ? "Saving..." : "Save stock"}
+              </button>
+            </div>
+
+            {/* Stock table */}
+            <div className="rounded-2xl bg-white border border-neutral-100 shadow-sm overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-neutral-50 border-b border-neutral-100">
+                    <tr>
+                      {["Product ID", "Size", "Color", "Quantity", ""].map((h) => (
+                        <th key={h} className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-neutral-500">
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-50">
+                    {inventory.map((row) => (
+                      <tr key={row.id} className="hover:bg-neutral-50 transition">
+                        <td className="px-4 py-3 text-neutral-700">{row.product_id}</td>
+                        <td className="px-4 py-3 text-neutral-700">{row.size}</td>
+                        <td className="px-4 py-3 text-neutral-700">{row.color}</td>
+                        <td className="px-4 py-3">
+                          {editingId === row.id ? (
+                            <input
+                              type="number"
+                              value={editQty}
+                              onChange={(e) => setEditQty(Number(e.target.value))}
+                              className="w-20 rounded-lg border border-neutral-200 px-2 py-1 text-sm outline-none focus:border-[var(--accent)]"
+                            />
+                          ) : (
+                            <span className={`font-medium ${
+                              row.quantity === 0
+                                ? "text-red-500"
+                                : row.quantity <= 3
+                                ? "text-amber-500"
+                                : "text-neutral-900"
+                            }`}>
+                              {row.quantity === 0 ? "Out of stock" : row.quantity}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          {editingId === row.id ? (
+                            <div className="flex justify-end gap-2">
+                              <button
+                                onClick={() => handleUpdateStock(row.id)}
+                                className="rounded-lg bg-[var(--accent)] px-3 py-1 text-xs font-medium text-white"
+                              >
+                                Save
+                              </button>
+                              <button
+                                onClick={() => setEditingId(null)}
+                                className="rounded-lg border border-neutral-200 px-3 py-1 text-xs text-neutral-600"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => { setEditingId(row.id); setEditQty(row.quantity); }}
+                              className="rounded-lg border border-neutral-200 px-3 py-1 text-xs text-neutral-600 hover:border-neutral-400 transition"
+                            >
+                              Edit
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── AI Analyst ── */}
         {tab === "analyst" && (
           <div className="rounded-2xl bg-white border border-neutral-100 shadow-sm flex flex-col" style={{ height: "60vh" }}>
-
-            {/* Messages */}
             <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
               {messages.map((msg, i) => (
                 <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
@@ -366,8 +550,6 @@ export function AdminPage() {
                 </div>
               )}
             </div>
-
-            {/* Input */}
             <div className="px-6 py-4 border-t border-neutral-100 flex-shrink-0">
               <div className="flex items-center gap-3 rounded-full border border-neutral-200 px-4 py-2 focus-within:border-[var(--accent)] transition">
                 <input
@@ -393,6 +575,7 @@ export function AdminPage() {
             </div>
           </div>
         )}
+
       </main>
     </div>
   );
