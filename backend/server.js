@@ -532,5 +532,49 @@ app.post("/api/admin/inventory/add", async (req, res) => {
   res.json({ success: true });
 });
 
+// ✅ WhatsApp webhook verification (Meta calls this once to confirm the URL is yours)
+app.get("/api/whatsapp/webhook", (req, res) => {
+  const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
+
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    console.log("✅ WhatsApp webhook verified");
+    res.status(200).send(challenge);
+  } else {
+    console.log("❌ WhatsApp webhook verification failed");
+    res.sendStatus(403);
+  }
+});
+
+// ✅ WhatsApp webhook — receives incoming messages
+app.post("/api/whatsapp/webhook", async (req, res) => {
+  const body = req.body;
+
+  // Always respond 200 quickly so Meta doesn't retry
+  res.sendStatus(200);
+
+  try {
+    const entry = body.entry?.[0];
+    const change = entry?.changes?.[0];
+    const message = change?.value?.messages?.[0];
+
+    if (!message) return; // not a message event (could be a status update)
+
+    const from = message.from; // customer's WhatsApp number
+    const text = message.text?.body;
+
+    console.log(`📲 WhatsApp message from ${from}: ${text}`);
+
+    // We'll build the actual bot logic in the next step
+    // For now, just log it to confirm the webhook works
+
+  } catch (error) {
+    console.error("❌ WhatsApp webhook error:", error);
+  }
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => console.log(`Backend running on port ${PORT}`));
