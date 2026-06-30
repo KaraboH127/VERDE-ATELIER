@@ -372,15 +372,15 @@ export function AdminPage() {
     <div className="min-h-screen bg-neutral-50">
 
       {/* Header */}
-      <header className="border-b border-neutral-200 bg-white px-6 py-4">
-        <div className="mx-auto flex max-w-[1280px] items-center justify-between">
-          <div>
-            <p className="text-xs uppercase tracking-widest text-[var(--accent)]">Verde Atelier</p>
-            <h1 className="text-lg font-semibold text-neutral-900">Admin Dashboard</h1>
+      <header className="border-b border-neutral-200 bg-white px-4 py-4 sm:px-6">
+        <div className="mx-auto flex max-w-[1280px] flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs uppercase tracking-widest text-[var(--accent)] truncate">Verde Atelier</p>
+            <h1 className="text-base font-semibold text-neutral-900 sm:text-lg">Admin Dashboard</h1>
           </div>
           <button
             onClick={handleLogout}
-            className="flex items-center gap-2 rounded-full border border-neutral-200 px-4 py-2 text-sm text-neutral-600 transition hover:border-neutral-400"
+            className="flex flex-shrink-0 items-center gap-2 rounded-full border border-neutral-200 px-3 py-2 text-xs text-neutral-600 transition hover:border-neutral-400 sm:px-4 sm:text-sm"
           >
             <LogOut size={14} />
             Sign out
@@ -388,7 +388,7 @@ export function AdminPage() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-[1280px] px-6 py-8 space-y-8">
+      <main className="mx-auto max-w-[1280px] px-4 py-6 space-y-6 sm:px-6 sm:py-8 sm:space-y-8">
 
         {/* Stats */}
         <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
@@ -408,13 +408,13 @@ export function AdminPage() {
           ))}
         </div>
 
-        {/* Tabs */}
-        <div className="flex gap-2">
+        {/* Tabs — horizontally scrollable on mobile, no cutoff */}
+        <div className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0 sm:pb-0 scrollbar-hide">
           {(["orders", "inventory", "analytics", "analyst"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`rounded-full px-5 py-2 text-sm font-medium transition ${
+              className={`flex-shrink-0 whitespace-nowrap rounded-full px-4 py-2 text-sm font-medium transition sm:px-5 ${
                 tab === t
                   ? "bg-[var(--accent)] text-white"
                   : "bg-white border border-neutral-200 text-neutral-600 hover:border-neutral-400"
