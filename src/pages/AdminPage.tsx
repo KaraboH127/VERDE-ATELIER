@@ -2,6 +2,10 @@ import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
 import { Send, LogOut, ShoppingBag, TrendingUp, DollarSign, Package, Search, ChevronLeft } from "lucide-react";
 import { products as allProducts } from "../data/store";
+import {
+  LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
+} from "recharts";
 
 interface Order {
   id: number;
@@ -40,6 +44,7 @@ interface Message {
   content: string;
 }
 
+// AI Chat Start State
 const GREETING = `Hi! I'm your Verde Atelier business analyst. 📊
 
 I have access to all your order data. You can ask me things like:
@@ -50,6 +55,12 @@ I have access to all your order data. You can ask me things like:
 - "What was my best day?"
 
 What would you like to know?`;
+
+const STATUS_COLORS: Record<string, string> = {
+  Paid: "#2d6a4f",
+  Pending: "#f0ad4e",
+  Failed: "#dc3545",
+};
 
 export function AdminPage() {
   // Auth
@@ -84,7 +95,7 @@ export function AdminPage() {
   const [aiLoading, setAiLoading] = useState(false);
 
   // Tab
-  const [tab, setTab] = useState<"orders" | "inventory" | "analyst">("orders");
+  const [tab, setTab] = useState<"orders" | "inventory" | "analytics" | "analyst">("orders");
 
   // ── Session on load ────────────────────────────────
   useEffect(() => {
@@ -285,6 +296,37 @@ export function AdminPage() {
     );
   });
 
+  // ── Analytics data prep ────────────────────────────
+  const revenueByDate = paidOrders.reduce((acc: Record<string, number>, order) => {
+    const date = new Date(order.created_at).toLocaleDateString("en-ZA", { day: "2-digit", month: "short" });
+    acc[date] = (acc[date] ?? 0) + order.amount / 100;
+    return acc;
+  }, {});
+
+  const revenueChartData = Object.entries(revenueByDate)
+    .map(([date, revenue]) => ({ date, revenue: Math.round(revenue * 100) / 100 }))
+    .reverse();
+
+  const productSales = orderItems.reduce((acc: Record<string, number>, item) => {
+    acc[item.product_name] = (acc[item.product_name] ?? 0) + item.quantity;
+    return acc;
+  }, {});
+
+  const topProductsData = Object.entries(productSales)
+    .map(([name, qty]) => ({ name, quantity: qty }))
+    .sort((a, b) => b.quantity - a.quantity)
+    .slice(0, 6);
+
+  const statusCounts = orders.reduce((acc: Record<string, number>, order) => {
+    acc[order.status] = (acc[order.status] ?? 0) + 1;
+    return acc;
+  }, {});
+
+  const statusChartData = Object.entries(statusCounts).map(([status, count]) => ({
+    name: status.charAt(0).toUpperCase() + status.slice(1),
+    value: count,
+  }));
+
   // ── Login screen ───────────────────────────────────
   if (!session) {
     return (
@@ -368,7 +410,7 @@ export function AdminPage() {
 
         {/* Tabs */}
         <div className="flex gap-2">
-          {(["orders", "inventory", "analyst"] as const).map((t) => (
+          {(["orders", "inventory", "analytics", "analyst"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -378,7 +420,7 @@ export function AdminPage() {
                   : "bg-white border border-neutral-200 text-neutral-600 hover:border-neutral-400"
               }`}
             >
-              {t === "orders" ? "Orders" : t === "inventory" ? "Inventory" : "AI Analyst"}
+              {t === "orders" ? "Orders" : t === "inventory" ? "Inventory" : t === "analytics" ? "Analytics" : "AI Analyst"}
             </button>
           ))}
         </div>
@@ -456,12 +498,10 @@ export function AdminPage() {
             <div className="rounded-2xl bg-white border border-neutral-100 shadow-sm p-6 space-y-6">
               <h2 className="text-sm font-semibold text-neutral-900">Restock products</h2>
 
-              {/* Step 1 — Pick a product */}
               {!selectedProduct && (
                 <div className="space-y-4">
                   <p className="text-xs text-neutral-500">Step 1 — Select a product</p>
 
-                  {/* Search */}
                   <div className="flex items-center gap-2 rounded-xl border border-neutral-200 px-3 py-2 focus-within:border-[var(--accent)] transition">
                     <Search size={14} className="text-neutral-400 flex-shrink-0" />
                     <input
@@ -473,7 +513,6 @@ export function AdminPage() {
                     />
                   </div>
 
-                  {/* Product grid */}
                   <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
                     {filteredProducts.map((product) => {
                       const totalStock = inventory
@@ -516,10 +555,8 @@ export function AdminPage() {
                 </div>
               )}
 
-              {/* Step 2 — Pick combos + set quantity */}
               {selectedProduct && (
                 <div className="space-y-5">
-                  {/* Back button */}
                   <button
                     onClick={() => { setSelectedProduct(null); setSelectedCombos(new Set()); }}
                     className="flex items-center gap-1 text-sm text-neutral-500 hover:text-neutral-800 transition"
@@ -533,7 +570,6 @@ export function AdminPage() {
                     <strong className="text-neutral-900">{selectedProduct.name}</strong>
                   </p>
 
-                  {/* Select all */}
                   <div className="flex items-center justify-between">
                     <button
                       onClick={toggleAll}
@@ -549,7 +585,6 @@ export function AdminPage() {
                     </p>
                   </div>
 
-                  {/* Size × Color grid */}
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm border-collapse">
                       <thead>
@@ -602,7 +637,6 @@ export function AdminPage() {
                     </table>
                   </div>
 
-                  {/* Quantity + restock button */}
                   {selectedCombos.size > 0 && (
                     <div className="flex items-center gap-4 pt-2 border-t border-neutral-100">
                       <div className="flex items-center gap-2">
@@ -703,6 +737,116 @@ export function AdminPage() {
                     )}
                   </tbody>
                 </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Analytics tab ── */}
+        {tab === "analytics" && (
+          <div className="space-y-6">
+
+            {/* Revenue over time */}
+            <div className="rounded-2xl bg-white border border-neutral-100 shadow-sm p-6">
+              <h2 className="text-sm font-semibold text-neutral-900 mb-1">Revenue over time</h2>
+              <p className="text-xs text-neutral-400 mb-6">Daily revenue from paid orders</p>
+
+              {revenueChartData.length === 0 ? (
+                <div className="flex h-64 items-center justify-center text-sm text-neutral-400">
+                  No revenue data yet.
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height={280}>
+                  <LineChart data={revenueChartData} margin={{ top: 5, right: 10, left: -10, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                    <XAxis dataKey="date" tick={{ fontSize: 12, fill: "#a3a3a3" }} />
+                    <YAxis tick={{ fontSize: 12, fill: "#a3a3a3" }} tickFormatter={(v) => `R${v}`} />
+                    <Tooltip
+                      formatter={(value: number) => [`R${value.toFixed(2)}`, "Revenue"]}
+                      contentStyle={{ borderRadius: 12, border: "1px solid #e5e5e5", fontSize: 13 }}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="revenue"
+                      stroke="#2d6a4f"
+                      strokeWidth={2.5}
+                      dot={{ fill: "#2d6a4f", r: 4 }}
+                      activeDot={{ r: 6 }}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+
+            {/* Two-column: top products + status breakdown */}
+            <div className="grid gap-6 md:grid-cols-2">
+
+              {/* Top products */}
+              <div className="rounded-2xl bg-white border border-neutral-100 shadow-sm p-6">
+                <h2 className="text-sm font-semibold text-neutral-900 mb-1">Top products</h2>
+                <p className="text-xs text-neutral-400 mb-6">By units sold</p>
+
+                {topProductsData.length === 0 ? (
+                  <div className="flex h-64 items-center justify-center text-sm text-neutral-400">
+                    No sales data yet.
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height={280}>
+                    <BarChart data={topProductsData} layout="vertical" margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
+                      <XAxis type="number" tick={{ fontSize: 12, fill: "#a3a3a3" }} allowDecimals={false} />
+                      <YAxis
+                        type="category"
+                        dataKey="name"
+                        tick={{ fontSize: 11, fill: "#525252" }}
+                        width={110}
+                      />
+                      <Tooltip
+                        formatter={(value: number) => [`${value} sold`, ""]}
+                        contentStyle={{ borderRadius: 12, border: "1px solid #e5e5e5", fontSize: 13 }}
+                      />
+                      <Bar dataKey="quantity" fill="#2d6a4f" radius={[0, 6, 6, 0]} barSize={18} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+
+              {/* Order status breakdown */}
+              <div className="rounded-2xl bg-white border border-neutral-100 shadow-sm p-6">
+                <h2 className="text-sm font-semibold text-neutral-900 mb-1">Order status</h2>
+                <p className="text-xs text-neutral-400 mb-6">Breakdown of all orders</p>
+
+                {statusChartData.length === 0 ? (
+                  <div className="flex h-64 items-center justify-center text-sm text-neutral-400">
+                    No orders yet.
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height={280}>
+                    <PieChart>
+                      <Pie
+                        data={statusChartData}
+                        dataKey="value"
+                        nameKey="name"
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={60}
+                        outerRadius={95}
+                        paddingAngle={3}
+                      >
+                        {statusChartData.map((entry) => (
+                          <Cell key={entry.name} fill={STATUS_COLORS[entry.name] ?? "#a3a3a3"} />
+                        ))}
+                      </Pie>
+                      <Tooltip contentStyle={{ borderRadius: 12, border: "1px solid #e5e5e5", fontSize: 13 }} />
+                      <Legend
+                        verticalAlign="bottom"
+                        height={36}
+                        iconType="circle"
+                        wrapperStyle={{ fontSize: 12 }}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                )}
               </div>
             </div>
           </div>
