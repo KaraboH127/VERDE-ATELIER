@@ -99,6 +99,25 @@ app.post(
           }
 
           await sendConfirmationEmail(updatedOrder, orderItems);
+
+          // ✅ Also notify the customer on WhatsApp
+          const { data: whatsappSession } = await supabase
+            .from("whatsapp_sessions")
+            .select("*")
+            .eq("data->>yocoId", checkoutId)
+            .single();
+
+          if (whatsappSession) {
+            const { data: orderItems } = await supabase
+              .from("order_items")
+              .select("*")
+              .eq("order_id", updatedOrder.id);
+
+            const slip = formatOrderSlip(updatedOrder, orderItems ?? []);
+            await sendMessage(whatsappSession.phone, slip);
+            await saveSession(whatsappSession.phone, "greeting", {});
+            console.log("📲 WhatsApp order slip sent to:", whatsappSession.phone);
+          }
         }
       }
     }
@@ -532,15 +551,206 @@ app.post("/api/admin/inventory/add", async (req, res) => {
   res.json({ success: true });
 });
 
-// ✅ WhatsApp webhook verification (Meta calls this once to confirm the URL is yours)
-app.get("/api/whatsapp/webhook", (req, res) => {
-  const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN;
 
+// ── WhatsApp helpers ───────────────────────────────
+async function getSession(phone) {
+  const { data } = await supabase
+    .from("whatsapp_sessions")
+    .select("*")
+    .eq("phone", phone)
+    .single();
+
+  if (data) return data;
+
+  const { data: newSession } = await supabase
+    .from("whatsapp_sessions")
+    .insert({ phone, step: "greeting", data: {} })
+    .select()
+    .single();
+
+  return newSession;
+}
+
+async function saveSession(phone, step, data) {
+  await supabase
+    .from("whatsapp_sessions")
+    .update({ step, data, updated_at: new Date().toISOString() })
+    .eq("phone", phone);
+}
+
+async function sendMessage(to, text) {
+  await fetch(`https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to,
+      type: "text",
+      text: { body: text },
+    }),
+  });
+}
+
+async function sendButtons(to, bodyText, buttons) {
+  await fetch(`https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        body: { text: bodyText },
+        action: {
+          buttons: buttons.map((b, i) => ({
+            type: "reply",
+            reply: { id: `btn_${i}`, title: b },
+          })),
+        },
+      },
+    }),
+  });
+}
+
+async function sendList(to, bodyText, buttonLabel, items) {
+  await fetch(`https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "list",
+        body: { text: bodyText },
+        action: {
+          button: buttonLabel,
+          sections: [
+            {
+              title: "Options",
+              rows: items.map((item, i) => ({
+                id: `item_${i}`,
+                title: item.title.substring(0, 24),
+                description: item.description ?? "",
+              })),
+            },
+          ],
+        },
+      },
+    }),
+  });
+}
+
+async function aiProductMatch(userText, products) {
+  const systemPrompt = `
+You are a shopping assistant for Verde Atelier, a high-end sustainable fashion store.
+The customer has typed a free-text message. Match it to the most relevant products from this list and return a JSON array of up to 3 product IDs.
+
+Products:
+${JSON.stringify(products.map(p => ({ id: p.id, name: p.name, category: p.category, price: p.price, description: p.description })))}
+
+Respond ONLY with a JSON array of product IDs, nothing else. Example: ["p1","p3"]
+If nothing matches, return an empty array: []
+`;
+
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": process.env.FRONTEND_URL,
+      "X-Title": "Verde Atelier WhatsApp",
+    },
+    body: JSON.stringify({
+      model: "poolside/laguna-m.1:free",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userText },
+      ],
+    }),
+  });
+
+  const data = await response.json();
+  const text = data.choices?.[0]?.message?.content ?? "[]";
+
+  try {
+    return JSON.parse(text.replace(/```json|```/g, "").trim());
+  } catch {
+    return [];
+  }
+}
+
+async function aiFallback(userText, step) {
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": process.env.FRONTEND_URL,
+      "X-Title": "Verde Atelier WhatsApp",
+    },
+    body: JSON.stringify({
+      model: "poolside/laguna-m.1:free",
+      messages: [
+        {
+          role: "system",
+          content: `You are a friendly WhatsApp shopping assistant for Verde Atelier, a high-end sustainable fashion store. The customer is currently at step: "${step}". Respond warmly and helpfully in 1-2 short sentences, guiding them back to the conversation.`,
+        },
+        { role: "user", content: userText },
+      ],
+    }),
+  });
+
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content ?? "Sorry, I didn't quite get that. Could you try again? 😊";
+}
+
+function formatOrderSlip(order, items) {
+  const itemLines = items.map(i =>
+    `  • ${i.product_name} (${i.size}, ${i.color}) x${i.quantity} — R${(i.line_total / 100).toFixed(2)}`
+  ).join("\n");
+
+  return `✅ *Order Confirmed!*\n\n📦 *Order #${order.id}*\n\n*Items:*\n${itemLines}\n\n*Total:* R${(order.amount / 100).toFixed(2)}\n\n*Shipping to:*\n${order.first_name} ${order.last_name}\n${order.address}\n${order.city}, ${order.postal}\n\nThank you for shopping with Verde Atelier 🌿\nWe'll be in touch with your tracking details soon.`;
+}
+
+const PRODUCTS = [
+  { id: "p1", name: "Aero Knit Runner", category: "Footwear", price: 190, sizes: ["7","8","9","10","11","12"], colors: ["Forest","Sand","Onyx"] },
+  { id: "p2", name: "Terra Hike Shell", category: "Outdoor", price: 260, sizes: ["S","M","L","XL"], colors: ["Moss","Slate","Bone"] },
+  { id: "p3", name: "Linen Flight Shirt", category: "Apparel", price: 120, sizes: ["S","M","L","XL"], colors: ["Sage","Clay","White"] },
+  { id: "p4", name: "Summit Crossbody", category: "Accessories", price: 140, sizes: ["One Size"], colors: ["Olive","Black","Mist"] },
+  { id: "p5", name: "Drift Wide Leg Pant", category: "Apparel", price: 170, sizes: ["XS","S","M","L"], colors: ["Stone","Deep Green","Charcoal"] },
+  { id: "p6", name: "Pulse Trail Mid", category: "Footwear", price: 220, sizes: ["7","8","9","10","11","12"], colors: ["Pine","Granite","Sand"] },
+  { id: "p7", name: "Studio Heavy Tee", category: "Apparel", price: 68, sizes: ["S","M","L","XL"], colors: ["Ivory","Forest","Ink"] },
+  { id: "p8", name: "Atlas Weekend Duffel", category: "Accessories", price: 240, sizes: ["40L"], colors: ["Olive","Black"] },
+  { id: "p9", name: "Meridian Leather Boot", category: "Footwear", price: 1350, sizes: ["7","8","9","10","11","12"], colors: ["Tan","Dark Brown","Black"] },
+  { id: "p10", name: "Altitude Insulated Jacket", category: "Outdoor", price: 1800, sizes: ["S","M","L","XL"], colors: ["Forest","Slate","Black"] },
+  { id: "p11", name: "Vela Structured Tote", category: "Accessories", price: 1200, sizes: ["One Size"], colors: ["Camel","Black","Forest"] },
+  { id: "p12", name: "Canyon Technical Trouser", category: "Outdoor", price: 1100, sizes: ["S","M","L","XL"], colors: ["Stone","Slate","Olive"] },
+  { id: "p13", name: "Grove Merino Crew", category: "Apparel", price: 380, sizes: ["S","M","L","XL"], colors: ["Sage","Oat","Charcoal"] },
+  { id: "p14", name: "Field Canvas Cap", category: "Accessories", price: 85, sizes: ["One Size"], colors: ["Khaki","Olive","Black"] },
+  { id: "p15", name: "Form Zip Hoodie", category: "Apparel", price: 210, sizes: ["S","M","L","XL","XXL"], colors: ["Ivory","Moss","Ink"] },
+  { id: "p16", name: "Base Trail Short", category: "Outdoor", price: 145, sizes: ["S","M","L","XL"], colors: ["Pine","Sand","Black"] },
+  { id: "p17", name: "Cord Slim Trouser", category: "Apparel", price: 195, sizes: ["28","30","32","34","36"], colors: ["Rust","Forest","Navy"] },
+  { id: "p18", name: "Peak Softshell Vest", category: "Outdoor", price: 320, sizes: ["S","M","L","XL"], colors: ["Slate","Moss","Black"] },
+];
+
+// ✅ WhatsApp webhook verification
+app.get("/api/whatsapp/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+  if (mode === "subscribe" && token === process.env.WHATSAPP_VERIFY_TOKEN) {
     console.log("✅ WhatsApp webhook verified");
     res.status(200).send(challenge);
   } else {
@@ -552,27 +762,342 @@ app.get("/api/whatsapp/webhook", (req, res) => {
 // ✅ WhatsApp webhook — receives incoming messages
 app.post("/api/whatsapp/webhook", async (req, res) => {
   const body = req.body;
-
-  // Always respond 200 quickly so Meta doesn't retry
-  res.sendStatus(200);
+  res.sendStatus(200); // respond immediately so Meta doesn't retry
 
   try {
     const entry = body.entry?.[0];
     const change = entry?.changes?.[0];
-    const message = change?.value?.messages?.[0];
+    const value = change?.value;
+    const message = value?.messages?.[0];
 
-    if (!message) return; // not a message event (could be a status update)
+    if (!message) return;
 
-    const from = message.from; // customer's WhatsApp number
-    const text = message.text?.body;
+    const from = message.from;
+    const msgType = message.type;
 
-    console.log(`📲 WhatsApp message from ${from}: ${text}`);
+    let text = "";
+    if (msgType === "text") {
+      text = message.text?.body?.trim() ?? "";
+    } else if (msgType === "interactive") {
+      text = message.interactive?.button_reply?.title ?? message.interactive?.list_reply?.title ?? "";
+    }
 
-    // We'll build the actual bot logic in the next step
-    // For now, just log it to confirm the webhook works
+    console.log(`📲 [${from}] ${text}`);
+
+    const session = await getSession(from);
+    const step = session.step;
+    const data = session.data ?? {};
+
+    // ── GREETING ──────────────────────────────────
+    if (step === "greeting" || ["hi","hello","hey","start","menu"].includes(text.toLowerCase())) {
+      await sendMessage(from,
+        `👋 Welcome to *Verde Atelier* — thoughtfully made fashion.\n\nI'm your personal shopping assistant. You can:\n\n• Tell me what you're looking for (e.g. "I want something warm under R500")\n• Or browse by category below 👇`
+      );
+      await sendList(from, "What would you like to explore?", "Browse categories", [
+        { title: "👟 Footwear", description: "Runners, boots, trail shoes" },
+        { title: "👕 Apparel", description: "Shirts, pants, hoodies, tees" },
+        { title: "🎒 Accessories", description: "Bags, caps, crossbodies" },
+        { title: "🏔️ Outdoor", description: "Jackets, shells, trail gear" },
+        { title: "✨ Recommend me something", description: "Let AI pick for you" },
+      ]);
+      await saveSession(from, "browse", data);
+      return;
+    }
+
+    // ── BROWSE / CATEGORY SELECTION ───────────────
+    if (step === "browse") {
+      const lower = text.toLowerCase();
+
+      const categoryMap = {
+        "👟 footwear": "Footwear", "footwear": "Footwear",
+        "👕 apparel": "Apparel", "apparel": "Apparel",
+        "🎒 accessories": "Accessories", "accessories": "Accessories",
+        "🏔️ outdoor": "Outdoor", "outdoor": "Outdoor",
+      };
+
+      const matchedCategory = Object.entries(categoryMap).find(([key]) => lower.includes(key))?.[1];
+
+      if (matchedCategory) {
+        const categoryProducts = PRODUCTS.filter(p => p.category === matchedCategory);
+        await sendList(
+          from,
+          `Here's our *${matchedCategory}* collection 👇\n\nTap a product to select it:`,
+          "View products",
+          categoryProducts.map(p => ({ title: p.name, description: `R${p.price}` }))
+        );
+        await saveSession(from, "pick_product", { ...data, category: matchedCategory });
+        return;
+      }
+
+      if (lower.includes("recommend") || lower.includes("✨")) {
+        await sendMessage(from, "Tell me what you're looking for — budget, style, occasion, anything! 😊");
+        await saveSession(from, "ai_search", data);
+        return;
+      }
+
+      // Free text — use AI to match
+      const matchedIds = await aiProductMatch(text, PRODUCTS);
+      if (matchedIds.length > 0) {
+        const matched = PRODUCTS.filter(p => matchedIds.includes(p.id));
+        await sendList(
+          from,
+          `Here's what I found for you 🌿\n\nTap a product to select it:`,
+          "View products",
+          matched.map(p => ({ title: p.name, description: `R${p.price}` }))
+        );
+        await saveSession(from, "pick_product", data);
+      } else {
+        const fallback = await aiFallback(text, step);
+        await sendMessage(from, fallback);
+      }
+      return;
+    }
+
+    // ── AI SEARCH ─────────────────────────────────
+    if (step === "ai_search") {
+      const matchedIds = await aiProductMatch(text, PRODUCTS);
+      if (matchedIds.length > 0) {
+        const matched = PRODUCTS.filter(p => matchedIds.includes(p.id));
+        await sendList(
+          from,
+          `Here's what I'd recommend for you 🌿`,
+          "View products",
+          matched.map(p => ({ title: p.name, description: `R${p.price}` }))
+        );
+        await saveSession(from, "pick_product", data);
+      } else {
+        await sendMessage(from, "Hmm, I couldn't find an exact match. Let me show you our full range instead.");
+        await sendList(from, "Browse by category:", "Choose category", [
+          { title: "👟 Footwear", description: "Runners, boots, trail shoes" },
+          { title: "👕 Apparel", description: "Shirts, pants, hoodies, tees" },
+          { title: "🎒 Accessories", description: "Bags, caps, crossbodies" },
+          { title: "🏔️ Outdoor", description: "Jackets, shells, trail gear" },
+        ]);
+        await saveSession(from, "browse", data);
+      }
+      return;
+    }
+
+    // ── PICK PRODUCT ──────────────────────────────
+    if (step === "pick_product") {
+      const product = PRODUCTS.find(p => p.name.toLowerCase() === text.toLowerCase());
+      if (!product) {
+        const fallback = await aiFallback(text, step);
+        await sendMessage(from, fallback);
+        return;
+      }
+
+      if (product.sizes.length === 1) {
+        await saveSession(from, "pick_color", { ...data, productId: product.id, productName: product.name, productPrice: product.price, size: product.sizes[0] });
+        await sendList(from, `Great choice! 🎉 Now pick a colour for your *${product.name}*:`, "Choose colour",
+          product.colors.map(c => ({ title: c }))
+        );
+      } else {
+        await saveSession(from, "pick_size", { ...data, productId: product.id, productName: product.name, productPrice: product.price });
+        await sendList(from, `Great choice! 🎉 What size would you like for *${product.name}*?`, "Choose size",
+          product.sizes.map(s => ({ title: s }))
+        );
+      }
+      return;
+    }
+
+    // ── PICK SIZE ─────────────────────────────────
+    if (step === "pick_size") {
+      const product = PRODUCTS.find(p => p.id === data.productId);
+      const size = product?.sizes.find(s => s.toLowerCase() === text.toLowerCase());
+
+      if (!size) {
+        await sendMessage(from, `Please choose a valid size: ${product?.sizes.join(", ")}`);
+        return;
+      }
+
+      await saveSession(from, "pick_color", { ...data, size });
+      await sendList(from, `Perfect! Now choose a colour:`, "Choose colour",
+        product.colors.map(c => ({ title: c }))
+      );
+      return;
+    }
+
+    // ── PICK COLOUR ───────────────────────────────
+    if (step === "pick_color") {
+      const product = PRODUCTS.find(p => p.id === data.productId);
+      const color = product?.colors.find(c => c.toLowerCase() === text.toLowerCase());
+
+      if (!color) {
+        await sendMessage(from, `Please choose a valid colour: ${product?.colors.join(", ")}`);
+        return;
+      }
+
+      await saveSession(from, "pick_quantity", { ...data, color });
+      await sendButtons(from, "How many would you like?", ["1", "2", "3"]);
+      return;
+    }
+
+    // ── PICK QUANTITY ─────────────────────────────
+    if (step === "pick_quantity") {
+      const qty = parseInt(text);
+      if (isNaN(qty) || qty < 1 || qty > 10) {
+        await sendMessage(from, "Please enter a quantity between 1 and 10.");
+        return;
+      }
+
+      await saveSession(from, "get_firstname", { ...data, quantity: qty });
+      await sendMessage(from, "Almost there! I just need your shipping details. 📦\n\nWhat's your *first name*?");
+      return;
+    }
+
+    // ── SHIPPING DETAILS ──────────────────────────
+    if (step === "get_firstname") {
+      await saveSession(from, "get_lastname", { ...data, firstName: text });
+      await sendMessage(from, `Nice to meet you, ${text}! 😊 What's your *last name*?`);
+      return;
+    }
+
+    if (step === "get_lastname") {
+      await saveSession(from, "get_address", { ...data, lastName: text });
+      await sendMessage(from, "What's your *street address*?");
+      return;
+    }
+
+    if (step === "get_address") {
+      await saveSession(from, "get_city", { ...data, address: text });
+      await sendMessage(from, "What *city* are you in?");
+      return;
+    }
+
+    if (step === "get_city") {
+      await saveSession(from, "get_postal", { ...data, city: text });
+      await sendMessage(from, "What's your *postal code*?");
+      return;
+    }
+
+    if (step === "get_postal") {
+      await saveSession(from, "get_email", { ...data, postal: text });
+      await sendMessage(from, "Last one! What's your *email address*? (We'll send your order confirmation here)");
+      return;
+    }
+
+    if (step === "get_email") {
+      const updatedData = { ...data, email: text };
+      await saveSession(from, "confirm_order", updatedData);
+
+      const product = PRODUCTS.find(p => p.id === updatedData.productId);
+      const lineTotal = (product?.price ?? 0) * updatedData.quantity;
+
+      await sendMessage(from,
+        `📋 *Order Summary*\n\n` +
+        `*Product:* ${updatedData.productName}\n` +
+        `*Size:* ${updatedData.size}\n` +
+        `*Colour:* ${updatedData.color}\n` +
+        `*Quantity:* ${updatedData.quantity}\n` +
+        `*Price:* R${lineTotal.toFixed(2)}\n\n` +
+        `*Shipping to:*\n` +
+        `${updatedData.firstName} ${updatedData.lastName}\n` +
+        `${updatedData.address}\n` +
+        `${updatedData.city}, ${updatedData.postal}\n` +
+        `${updatedData.email}\n\n` +
+        `Shall I create your payment link? 👇`
+      );
+      await sendButtons(from, "Confirm your order:", ["✅ Yes, pay now", "❌ Cancel"]);
+      return;
+    }
+
+    // ── CONFIRM ORDER ─────────────────────────────
+    if (step === "confirm_order") {
+      if (text.toLowerCase().includes("cancel") || text.includes("❌")) {
+        await saveSession(from, "greeting", {});
+        await sendMessage(from, "No problem! Your order has been cancelled. Type *hi* to start again anytime. 😊");
+        return;
+      }
+
+      if (text.toLowerCase().includes("yes") || text.includes("✅")) {
+        const product = PRODUCTS.find(p => p.id === data.productId);
+        const lineTotal = (product?.price ?? 0) * data.quantity;
+
+        await sendMessage(from, "Creating your payment link... ⏳");
+
+        const checkoutRes = await fetch("https://payments.yoco.com/api/checkouts", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${process.env.YOCO_SECRET_KEY}`,
+          },
+          body: JSON.stringify({
+            amount: lineTotal * 100,
+            currency: "ZAR",
+            successUrl: `${process.env.FRONTEND_URL}/order-success`,
+            cancelUrl: `${process.env.FRONTEND_URL}`,
+            failureUrl: `${process.env.FRONTEND_URL}`,
+          }),
+        });
+
+        const checkoutData = await checkoutRes.json();
+
+        if (!checkoutRes.ok) {
+          await sendMessage(from, "Sorry, I couldn't create your payment link. Please try again or visit our website.");
+          return;
+        }
+
+        const { data: newOrder } = await supabase
+          .from("orders")
+          .insert({
+            first_name: data.firstName,
+            last_name: data.lastName,
+            address: data.address,
+            city: data.city,
+            postal: data.postal,
+            email: data.email,
+            yoco_order_id: checkoutData.id,
+            amount: lineTotal * 100,
+            status: "pending",
+          })
+          .select()
+          .single();
+
+        await supabase.from("order_items").insert({
+          order_id: newOrder.id,
+          product_id: data.productId,
+          product_name: data.productName,
+          price: (product?.price ?? 0) * 100,
+          quantity: data.quantity,
+          line_total: lineTotal * 100,
+          color: data.color,
+          size: data.size,
+        });
+
+        await saveSession(from, "awaiting_payment", {
+          ...data,
+          orderId: newOrder.id,
+          yocoId: checkoutData.id,
+        });
+
+        await sendMessage(from,
+          `🎉 *Your payment link is ready!*\n\n` +
+          `👉 ${checkoutData.redirectUrl}\n\n` +
+          `This link is secure and powered by Yoco. Once you've paid, I'll send you your order confirmation right here. 🌿`
+        );
+        return;
+      }
+
+      const fallback = await aiFallback(text, step);
+      await sendMessage(from, fallback);
+      return;
+    }
+
+    // ── AWAITING PAYMENT ──────────────────────────
+    if (step === "awaiting_payment") {
+      await sendMessage(from,
+        `Your order is still waiting for payment. 😊\n\nUse the link I sent you to complete your purchase.\n\nType *cancel* if you'd like to start over.`
+      );
+      return;
+    }
+
+    // ── GLOBAL FALLBACK ───────────────────────────
+    const fallback = await aiFallback(text, step);
+    await sendMessage(from, fallback);
 
   } catch (error) {
-    console.error("❌ WhatsApp webhook error:", error);
+    console.error("❌ WhatsApp bot error:", error);
   }
 });
 
