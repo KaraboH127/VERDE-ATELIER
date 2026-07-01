@@ -18,224 +18,211 @@ const supabase = createClient(
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-// ✅ Webhook route FIRST (needs raw body)
-app.post(
-  "/api/webhook",
-  express.raw({ type: "application/json" }),
-  async (req, res) => {
-    const secret = process.env.YOCO_WEBHOOK_SECRET;
-    const signature = req.headers["x-yoco-signature"];
+// ── Product catalogue (kept in sync with frontend store.ts) ───
+const PRODUCTS = [
+  { id: "p1", name: "Aero Knit Runner", category: "Footwear", price: 190, sizes: ["7","8","9","10","11","12"], colors: ["Forest","Sand","Onyx"] },
+  { id: "p2", name: "Terra Hike Shell", category: "Outdoor", price: 260, sizes: ["S","M","L","XL"], colors: ["Moss","Slate","Bone"] },
+  { id: "p3", name: "Linen Flight Shirt", category: "Apparel", price: 120, sizes: ["S","M","L","XL"], colors: ["Sage","Clay","White"] },
+  { id: "p4", name: "Summit Crossbody", category: "Accessories", price: 140, sizes: ["One Size"], colors: ["Olive","Black","Mist"] },
+  { id: "p5", name: "Drift Wide Leg Pant", category: "Apparel", price: 170, sizes: ["XS","S","M","L"], colors: ["Stone","Deep Green","Charcoal"] },
+  { id: "p6", name: "Pulse Trail Mid", category: "Footwear", price: 220, sizes: ["7","8","9","10","11","12"], colors: ["Pine","Granite","Sand"] },
+  { id: "p7", name: "Studio Heavy Tee", category: "Apparel", price: 68, sizes: ["S","M","L","XL"], colors: ["Ivory","Forest","Ink"] },
+  { id: "p8", name: "Atlas Weekend Duffel", category: "Accessories", price: 240, sizes: ["40L"], colors: ["Olive","Black"] },
+  { id: "p9", name: "Meridian Leather Boot", category: "Footwear", price: 1350, sizes: ["7","8","9","10","11","12"], colors: ["Tan","Dark Brown","Black"] },
+  { id: "p10", name: "Altitude Insulated Jacket", category: "Outdoor", price: 1800, sizes: ["S","M","L","XL"], colors: ["Forest","Slate","Black"] },
+  { id: "p11", name: "Vela Structured Tote", category: "Accessories", price: 1200, sizes: ["One Size"], colors: ["Camel","Black","Forest"] },
+  { id: "p12", name: "Canyon Technical Trouser", category: "Outdoor", price: 1100, sizes: ["S","M","L","XL"], colors: ["Stone","Slate","Olive"] },
+  { id: "p13", name: "Grove Merino Crew", category: "Apparel", price: 380, sizes: ["S","M","L","XL"], colors: ["Sage","Oat","Charcoal"] },
+  { id: "p14", name: "Field Canvas Cap", category: "Accessories", price: 85, sizes: ["One Size"], colors: ["Khaki","Olive","Black"] },
+  { id: "p15", name: "Form Zip Hoodie", category: "Apparel", price: 210, sizes: ["S","M","L","XL","XXL"], colors: ["Ivory","Moss","Ink"] },
+  { id: "p16", name: "Base Trail Short", category: "Outdoor", price: 145, sizes: ["S","M","L","XL"], colors: ["Pine","Sand","Black"] },
+  { id: "p17", name: "Cord Slim Trouser", category: "Apparel", price: 195, sizes: ["28","30","32","34","36"], colors: ["Rust","Forest","Navy"] },
+  { id: "p18", name: "Peak Softshell Vest", category: "Outdoor", price: 320, sizes: ["S","M","L","XL"], colors: ["Slate","Moss","Black"] },
+];
 
-    if (secret && signature) {
-      const expected = crypto
-        .createHmac("sha256", secret)
-        .update(req.body)
-        .digest("hex");
+// ── WhatsApp helpers ───────────────────────────────────────────
 
-      if (signature !== expected) {
-        console.log("❌ Invalid webhook signature");
-        return res.status(401).send("Invalid signature");
-      }
-    }
+async function getSession(phone) {
+  const { data } = await supabase
+    .from("whatsapp_sessions")
+    .select("*")
+    .eq("phone", phone)
+    .single();
 
-    const event = JSON.parse(req.body.toString());
-    console.log("✅ Webhook received:", event.type);
+  if (data) return data;
 
-    // 💰 Payment succeeded — mark as paid, decrement stock, send email
-    if (event.type === "payment.succeeded") {
-      const checkoutId = event.payload?.metadata?.checkoutId;
-      console.log("💰 Payment succeeded for checkoutId:", checkoutId);
+  const { data: newSession } = await supabase
+    .from("whatsapp_sessions")
+    .insert({ phone, step: "greeting", data: {} })
+    .select()
+    .single();
 
-      // ✅ Retry up to 5 times with a 1 second delay between each attempt
-      let updatedOrder = null;
+  return newSession;
+}
 
-      for (let attempt = 1; attempt <= 5; attempt++) {
-        const { data: updatedOrders, error: updateError } = await supabase
-          .from("orders")
-          .update({ status: "paid" })
-          .eq("yoco_order_id", checkoutId)
-          .select();
+async function saveSession(phone, step, data) {
+  await supabase
+    .from("whatsapp_sessions")
+    .update({ step, data, updated_at: new Date().toISOString() })
+    .eq("phone", phone);
+}
 
-        if (updateError) {
-          console.error("❌ Supabase update error:", updateError);
-          break;
-        }
+async function sendWAMessage(to, text) {
+  await fetch(`https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to,
+      type: "text",
+      text: { body: text },
+    }),
+  });
+}
 
-        if (updatedOrders?.length > 0) {
-          updatedOrder = updatedOrders[0];
-          console.log(`✅ Order marked as paid on attempt ${attempt}:`, checkoutId);
-          break;
-        }
+async function sendButtons(to, bodyText, buttons) {
+  await fetch(`https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "button",
+        body: { text: bodyText },
+        action: {
+          buttons: buttons.map((b, i) => ({
+            type: "reply",
+            reply: { id: `btn_${i}`, title: b },
+          })),
+        },
+      },
+    }),
+  });
+}
 
-        console.warn(`⏳ Attempt ${attempt}: order not found yet, retrying in 1s...`);
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-      }
+async function sendList(to, bodyText, buttonLabel, items) {
+  await fetch(`https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "list",
+        body: { text: bodyText },
+        action: {
+          button: buttonLabel.substring(0, 20), // ✅ WhatsApp 20 char limit on button label
+          sections: [
+            {
+              title: "Options",
+              rows: items.map((item, i) => ({
+                id: `item_${i}`,
+                title: item.title.substring(0, 24),
+                description: (item.description ?? "").substring(0, 72),
+              })),
+            },
+          ],
+        },
+      },
+    }),
+  });
+}
 
-      if (!updatedOrder) {
-        console.error("❌ Order still not found after all retries:", checkoutId);
-      } else {
-        const { data: orderItems, error: itemsError } = await supabase
-          .from("order_items")
-          .select("*")
-          .eq("order_id", updatedOrder.id);
+async function aiProductMatch(userText) {
+  const systemPrompt = `
+You are a shopping assistant for Verde Atelier, a high-end sustainable fashion store.
+The customer has typed a free-text message. Match it to the most relevant products from this list and return a JSON array of up to 3 product IDs.
 
-        if (itemsError) {
-          console.error("❌ Could not fetch order items:", itemsError);
-        } else {
-          // ✅ Decrement inventory for each item purchased
-          for (const item of orderItems) {
-            const { error: stockError } = await supabase.rpc("decrement_stock", {
-              p_product_id: item.product_id,
-              p_size: item.size,
-              p_color: item.color,
-              p_quantity: item.quantity,
-            });
+Products:
+${JSON.stringify(PRODUCTS.map(p => ({ id: p.id, name: p.name, category: p.category, price: p.price })))}
 
-            if (stockError) {
-              console.error("❌ Stock decrement error:", stockError);
-            } else {
-              console.log(`📦 Stock decremented for ${item.product_name} (${item.size}, ${item.color})`);
-            }
-          }
-
-          await sendConfirmationEmail(updatedOrder, orderItems);
-
-          // ✅ Also notify the customer on WhatsApp
-          const { data: whatsappSession } = await supabase
-            .from("whatsapp_sessions")
-            .select("*")
-            .eq("data->>yocoId", checkoutId)
-            .single();
-
-          if (whatsappSession) {
-            const { data: orderItems } = await supabase
-              .from("order_items")
-              .select("*")
-              .eq("order_id", updatedOrder.id);
-
-            const slip = formatOrderSlip(updatedOrder, orderItems ?? []);
-            await sendMessage(whatsappSession.phone, slip);
-            await saveSession(whatsappSession.phone, "greeting", {});
-            console.log("📲 WhatsApp order slip sent to:", whatsappSession.phone);
-          }
-        }
-      }
-    }
-
-    // ❌ Payment failed — update existing row to 'failed'
-    if (event.type === "payment.failed") {
-      const checkoutId = event.payload?.metadata?.checkoutId; // or event.payload?.id;
-      console.log("❌ Payment failed for checkoutId:", checkoutId);
-
-      const { error } = await supabase
-        .from("orders")
-        .update({ status: "failed" })
-        .eq("yoco_order_id", checkoutId);
-
-      if (error) {
-        console.error("❌ Supabase update error:", error);
-      } else {
-        console.log("🗑️ Order marked as failed for:", checkoutId);
-      }
-    }
-
-    res.sendStatus(200);
-  }
-);
-
-// ✅ Now express.json() applies to everything below
-app.use(express.json());
-
-// ✅ Create checkout — saves order + items to Supabase as 'pending'
-app.post("/api/create-checkout", async (req, res) => {
-  const {
-    amount,
-    firstName,
-    lastName,
-    address,
-    city,
-    postal,
-    email,
-    items,
-  } = req.body;
-
-  const amountInCents = amount * 100;
+Respond ONLY with a JSON array of product IDs, nothing else. Example: ["p1","p3"]
+If nothing matches, return an empty array: []
+`;
 
   try {
-    const response = await fetch("https://payments.yoco.com/api/checkouts", {
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
+        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
         "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.YOCO_SECRET_KEY}`,
+        "HTTP-Referer": process.env.FRONTEND_URL,
+        "X-Title": "Verde Atelier WhatsApp",
       },
       body: JSON.stringify({
-        amount: amountInCents,
-        currency: "ZAR",
-        successUrl: `${process.env.FRONTEND_URL}/order-success`,
-        cancelUrl: `${process.env.FRONTEND_URL}/checkout`,
-        failureUrl: `${process.env.FRONTEND_URL}/checkout?payment=failed`,
+        model: "poolside/laguna-m.1:free",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userText },
+        ],
       }),
     });
 
     const data = await response.json();
-
-    if (!response.ok) {
-      return res.status(400).json({ error: data.displayMessage || "Could not create checkout" });
-    }
-
-    // ✅ Save order row first
-    const { data: newOrder, error: orderError } = await supabase
-      .from("orders")
-      .insert({
-        first_name: firstName,
-        last_name: lastName,
-        address,
-        city,
-        postal,
-        email,
-        yoco_order_id: data.id,
-        amount: amountInCents,
-        status: "pending",
-      })
-      .select()
-      .single();
-
-    if (orderError) {
-      console.error("❌ Supabase insert error:", orderError);
-      return res.status(500).json({ error: "Could not save order" });
-    }
-
-    // ✅ Save each cart item linked to the order
-    const orderItems = items.map((item) => ({
-      order_id: newOrder.id,
-      product_id: item.productId,
-      product_name: item.product.name,
-      price: Math.round(item.product.price * 100),
-      quantity: item.quantity,
-      line_total: Math.round(item.lineTotal * 100),
-      color: item.color ?? null,
-      size: item.size ?? null,
-    }));
-
-    const { error: itemsError } = await supabase
-      .from("order_items")
-      .insert(orderItems);
-
-    if (itemsError) {
-      console.error("❌ Supabase order_items insert error:", itemsError);
-    } else {
-      console.log(`📦 Saved ${orderItems.length} item(s) for order:`, newOrder.id);
-    }
-
-    res.json({ redirectUrl: data.redirectUrl, checkoutId: data.id });
-
-  } catch (error) {
-    console.error("Create checkout error:", error);
-    res.status(500).json({ error: "Server error" });
+    const raw = data.choices?.[0]?.message?.content ?? "[]";
+    return JSON.parse(raw.replace(/```json|```/g, "").trim());
+  } catch {
+    return [];
   }
-});
+}
 
-// ✅ Confirmation email helper
+async function aiFallback(userText, step) {
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": process.env.FRONTEND_URL,
+        "X-Title": "Verde Atelier WhatsApp",
+      },
+      body: JSON.stringify({
+        model: "poolside/laguna-m.1:free",
+        messages: [
+          {
+            role: "system",
+            content: `You are a friendly WhatsApp shopping assistant for Verde Atelier, a high-end sustainable fashion store. The customer is currently at step: "${step}". Respond warmly and helpfully in 1-2 short sentences, guiding them back to the conversation.`,
+          },
+          { role: "user", content: userText },
+        ],
+      }),
+    });
+
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content ?? "Sorry, I didn't quite get that. Could you try again? 😊";
+  } catch {
+    return "Sorry, I didn't quite get that. Could you try again? 😊";
+  }
+}
+
+function formatOrderSlip(order, items) {
+  const itemLines = items.map(i =>
+    `  • ${i.product_name} (${i.size}, ${i.color}) x${i.quantity} — R${(i.line_total / 100).toFixed(2)}`
+  ).join("\n");
+
+  return (
+    `✅ *Order Confirmed!*\n\n` +
+    `📦 *Order #${order.id}*\n\n` +
+    `*Items:*\n${itemLines}\n\n` +
+    `*Total:* R${(order.amount / 100).toFixed(2)}\n\n` +
+    `*Shipping to:*\n${order.first_name} ${order.last_name}\n${order.address}\n${order.city}, ${order.postal}\n\n` +
+    `Thank you for shopping with Verde Atelier 🌿\nWe'll be in touch with your tracking details soon.`
+  );
+}
+
+// ── Confirmation email helper ──────────────────────────────────
 async function sendConfirmationEmail(order, items) {
   const itemRows = items
     .map(
@@ -358,7 +345,207 @@ async function sendConfirmationEmail(order, items) {
   }
 }
 
-// ✅ AI recommendation route
+// ── Yoco webhook FIRST (needs raw body) ───────────────────────
+app.post(
+  "/api/webhook",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    const secret = process.env.YOCO_WEBHOOK_SECRET;
+    const signature = req.headers["x-yoco-signature"];
+
+    if (secret && signature) {
+      const expected = crypto
+        .createHmac("sha256", secret)
+        .update(req.body)
+        .digest("hex");
+
+      if (signature !== expected) {
+        console.log("❌ Invalid webhook signature");
+        return res.status(401).send("Invalid signature");
+      }
+    }
+
+    const event = JSON.parse(req.body.toString());
+    console.log("✅ Webhook received:", event.type);
+
+    // 💰 Payment succeeded
+    if (event.type === "payment.succeeded") {
+      const checkoutId = event.payload?.metadata?.checkoutId; // ✅ fixed — was event.payload?.id
+      console.log("💰 Payment succeeded for checkoutId:", checkoutId);
+
+      let updatedOrder = null;
+
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        const { data: updatedOrders, error: updateError } = await supabase
+          .from("orders")
+          .update({ status: "paid" })
+          .eq("yoco_order_id", checkoutId)
+          .select();
+
+        if (updateError) {
+          console.error("❌ Supabase update error:", updateError);
+          break;
+        }
+
+        if (updatedOrders?.length > 0) {
+          updatedOrder = updatedOrders[0];
+          console.log(`✅ Order marked as paid on attempt ${attempt}:`, checkoutId);
+          break;
+        }
+
+        console.warn(`⏳ Attempt ${attempt}: order not found yet, retrying in 1s...`);
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+
+      if (!updatedOrder) {
+        console.error("❌ Order still not found after all retries:", checkoutId);
+      } else {
+        const { data: paidOrderItems, error: itemsError } = await supabase
+          .from("order_items")
+          .select("*")
+          .eq("order_id", updatedOrder.id);
+
+        if (itemsError) {
+          console.error("❌ Could not fetch order items:", itemsError);
+        } else {
+          // ✅ Decrement inventory for each item
+          for (const item of paidOrderItems) {
+            const { error: stockError } = await supabase.rpc("decrement_stock", {
+              p_product_id: item.product_id,
+              p_size: item.size,
+              p_color: item.color,
+              p_quantity: item.quantity,
+            });
+
+            if (stockError) {
+              console.error("❌ Stock decrement error:", stockError);
+            } else {
+              console.log(`📦 Stock decremented for ${item.product_name} (${item.size}, ${item.color})`);
+            }
+          }
+
+          // ✅ Send confirmation email
+          await sendConfirmationEmail(updatedOrder, paidOrderItems);
+
+          // ✅ Send WhatsApp order slip if this order came from WhatsApp
+          // ✅ Fixed — renamed variable to avoid collision with paidOrderItems above
+          const { data: whatsappSession } = await supabase
+            .from("whatsapp_sessions")
+            .select("*")
+            .eq("data->>yocoId", checkoutId)
+            .single();
+
+          if (whatsappSession) {
+            const slip = formatOrderSlip(updatedOrder, paidOrderItems);
+            await sendWAMessage(whatsappSession.phone, slip);
+            await saveSession(whatsappSession.phone, "greeting", {});
+            console.log("📲 WhatsApp order slip sent to:", whatsappSession.phone);
+          }
+        }
+      }
+    }
+
+    // ❌ Payment failed
+    if (event.type === "payment.failed") {
+      const checkoutId = event.payload?.metadata?.checkoutId; // ✅ fixed — was event.payload?.id
+      console.log("❌ Payment failed for checkoutId:", checkoutId);
+
+      const { error } = await supabase
+        .from("orders")
+        .update({ status: "failed" })
+        .eq("yoco_order_id", checkoutId);
+
+      if (error) {
+        console.error("❌ Supabase update error:", error);
+      } else {
+        console.log("🗑️ Order marked as failed for:", checkoutId);
+      }
+    }
+
+    res.sendStatus(200);
+  }
+);
+
+// ✅ express.json() applies to everything below
+app.use(express.json());
+
+// ── Create checkout ────────────────────────────────────────────
+app.post("/api/create-checkout", async (req, res) => {
+  const { amount, firstName, lastName, address, city, postal, email, items } = req.body;
+
+  const amountInCents = amount * 100;
+
+  try {
+    const response = await fetch("https://payments.yoco.com/api/checkouts", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.YOCO_SECRET_KEY}`,
+      },
+      body: JSON.stringify({
+        amount: amountInCents,
+        currency: "ZAR",
+        successUrl: `${process.env.FRONTEND_URL}/order-success`,
+        cancelUrl: `${process.env.FRONTEND_URL}/checkout`,
+        failureUrl: `${process.env.FRONTEND_URL}/checkout?payment=failed`,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return res.status(400).json({ error: data.displayMessage || "Could not create checkout" });
+    }
+
+    const { data: newOrder, error: orderError } = await supabase
+      .from("orders")
+      .insert({
+        first_name: firstName,
+        last_name: lastName,
+        address,
+        city,
+        postal,
+        email,
+        yoco_order_id: data.id,
+        amount: amountInCents,
+        status: "pending",
+      })
+      .select()
+      .single();
+
+    if (orderError) {
+      console.error("❌ Supabase insert error:", orderError);
+      return res.status(500).json({ error: "Could not save order" });
+    }
+
+    const orderItems = items.map((item) => ({
+      order_id: newOrder.id,
+      product_id: item.productId,
+      product_name: item.product.name,
+      price: Math.round(item.product.price * 100),
+      quantity: item.quantity,
+      line_total: Math.round(item.lineTotal * 100),
+      color: item.color ?? null,
+      size: item.size ?? null,
+    }));
+
+    const { error: itemsError } = await supabase.from("order_items").insert(orderItems);
+
+    if (itemsError) {
+      console.error("❌ Supabase order_items insert error:", itemsError);
+    } else {
+      console.log(`📦 Saved ${orderItems.length} item(s) for order:`, newOrder.id);
+    }
+
+    res.json({ redirectUrl: data.redirectUrl, checkoutId: data.id });
+
+  } catch (error) {
+    console.error("Create checkout error:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ── AI recommendation route ────────────────────────────────────
 app.post("/api/recommend", async (req, res) => {
   const { messages, products, orderStats } = req.body;
 
@@ -393,10 +580,7 @@ Rules:
       },
       body: JSON.stringify({
         model: "poolside/laguna-m.1:free",
-        messages: [
-          { role: "system", content: systemPrompt },
-          ...messages,
-        ],
+        messages: [{ role: "system", content: systemPrompt }, ...messages],
       }),
     });
 
@@ -407,8 +591,7 @@ Rules:
       return res.status(500).json({ error: "AI service unavailable" });
     }
 
-    const reply = data.choices?.[0]?.message?.content;
-    res.json({ reply });
+    res.json({ reply: data.choices?.[0]?.message?.content });
 
   } catch (error) {
     console.error("❌ Recommend route error:", error);
@@ -416,33 +599,25 @@ Rules:
   }
 });
 
-// ✅ Admin — fetch all orders + items
+// ── Admin — fetch all orders + items ──────────────────────────
 app.post("/api/admin/data", async (req, res) => {
   const { token } = req.body;
-
   const { data: { user }, error: authError } = await supabase.auth.getUser(token);
   if (authError || !user) return res.status(401).json({ error: "Unauthorized" });
 
   const { data: orders, error: ordersError } = await supabase
-    .from("orders")
-    .select("*")
-    .order("created_at", { ascending: false });
-
+    .from("orders").select("*").order("created_at", { ascending: false });
   if (ordersError) return res.status(500).json({ error: "Could not fetch orders" });
 
-  const { data: orderItems, error: itemsError } = await supabase
-    .from("order_items")
-    .select("*");
-
+  const { data: orderItems, error: itemsError } = await supabase.from("order_items").select("*");
   if (itemsError) return res.status(500).json({ error: "Could not fetch order items" });
 
   res.json({ orders, orderItems });
 });
 
-// ✅ Admin — AI business analyst
+// ── Admin — AI business analyst ────────────────────────────────
 app.post("/api/admin/analyse", async (req, res) => {
   const { token, messages, orders, orderItems } = req.body;
-
   const { data: { user }, error: authError } = await supabase.auth.getUser(token);
   if (authError || !user) return res.status(401).json({ error: "Unauthorized" });
 
@@ -478,22 +653,17 @@ If asked something unrelated to the business data, politely redirect.
       },
       body: JSON.stringify({
         model: "poolside/laguna-m.1:free",
-        messages: [
-          { role: "system", content: systemPrompt },
-          ...messages,
-        ],
+        messages: [{ role: "system", content: systemPrompt }, ...messages],
       }),
     });
 
     const data = await response.json();
-
     if (!response.ok) {
       console.error("❌ OpenRouter error:", data);
       return res.status(500).json({ error: "AI service unavailable" });
     }
 
-    const reply = data.choices?.[0]?.message?.content;
-    res.json({ reply });
+    res.json({ reply: data.choices?.[0]?.message?.content });
 
   } catch (error) {
     console.error("❌ Analyse route error:", error);
@@ -501,250 +671,45 @@ If asked something unrelated to the business data, politely redirect.
   }
 });
 
-// ✅ Admin — fetch inventory
+// ── Admin — fetch inventory ────────────────────────────────────
 app.post("/api/admin/inventory", async (req, res) => {
   const { token } = req.body;
-
   const { data: { user }, error: authError } = await supabase.auth.getUser(token);
   if (authError || !user) return res.status(401).json({ error: "Unauthorized" });
 
-  const { data, error } = await supabase
-    .from("inventory")
-    .select("*")
-    .order("product_id");
-
+  const { data, error } = await supabase.from("inventory").select("*").order("product_id");
   if (error) return res.status(500).json({ error: "Could not fetch inventory" });
 
   res.json({ inventory: data });
 });
 
-// ✅ Admin — update a single inventory row
+// ── Admin — update a single inventory row ─────────────────────
 app.post("/api/admin/inventory/update", async (req, res) => {
   const { token, id, quantity } = req.body;
-
   const { data: { user }, error: authError } = await supabase.auth.getUser(token);
   if (authError || !user) return res.status(401).json({ error: "Unauthorized" });
 
-  const { error } = await supabase
-    .from("inventory")
-    .update({ quantity })
-    .eq("id", id);
-
+  const { error } = await supabase.from("inventory").update({ quantity }).eq("id", id);
   if (error) return res.status(500).json({ error: "Could not update stock" });
 
   res.json({ success: true });
 });
 
-// ✅ Admin — add a new inventory row
+// ── Admin — add / upsert inventory row ────────────────────────
 app.post("/api/admin/inventory/add", async (req, res) => {
   const { token, product_id, size, color, quantity } = req.body;
-
   const { data: { user }, error: authError } = await supabase.auth.getUser(token);
   if (authError || !user) return res.status(401).json({ error: "Unauthorized" });
 
   const { error } = await supabase
     .from("inventory")
     .upsert({ product_id, size, color, quantity }, { onConflict: "product_id,size,color" });
-
   if (error) return res.status(500).json({ error: "Could not add stock" });
 
   res.json({ success: true });
 });
 
-
-// ── WhatsApp helpers ───────────────────────────────
-async function getSession(phone) {
-  const { data } = await supabase
-    .from("whatsapp_sessions")
-    .select("*")
-    .eq("phone", phone)
-    .single();
-
-  if (data) return data;
-
-  const { data: newSession } = await supabase
-    .from("whatsapp_sessions")
-    .insert({ phone, step: "greeting", data: {} })
-    .select()
-    .single();
-
-  return newSession;
-}
-
-async function saveSession(phone, step, data) {
-  await supabase
-    .from("whatsapp_sessions")
-    .update({ step, data, updated_at: new Date().toISOString() })
-    .eq("phone", phone);
-}
-
-async function sendMessage(to, text) {
-  await fetch(`https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
-      to,
-      type: "text",
-      text: { body: text },
-    }),
-  });
-}
-
-async function sendButtons(to, bodyText, buttons) {
-  await fetch(`https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
-      to,
-      type: "interactive",
-      interactive: {
-        type: "button",
-        body: { text: bodyText },
-        action: {
-          buttons: buttons.map((b, i) => ({
-            type: "reply",
-            reply: { id: `btn_${i}`, title: b },
-          })),
-        },
-      },
-    }),
-  });
-}
-
-async function sendList(to, bodyText, buttonLabel, items) {
-  await fetch(`https://graph.facebook.com/v19.0/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
-      to,
-      type: "interactive",
-      interactive: {
-        type: "list",
-        body: { text: bodyText },
-        action: {
-          button: buttonLabel,
-          sections: [
-            {
-              title: "Options",
-              rows: items.map((item, i) => ({
-                id: `item_${i}`,
-                title: item.title.substring(0, 24),
-                description: item.description ?? "",
-              })),
-            },
-          ],
-        },
-      },
-    }),
-  });
-}
-
-async function aiProductMatch(userText, products) {
-  const systemPrompt = `
-You are a shopping assistant for Verde Atelier, a high-end sustainable fashion store.
-The customer has typed a free-text message. Match it to the most relevant products from this list and return a JSON array of up to 3 product IDs.
-
-Products:
-${JSON.stringify(products.map(p => ({ id: p.id, name: p.name, category: p.category, price: p.price, description: p.description })))}
-
-Respond ONLY with a JSON array of product IDs, nothing else. Example: ["p1","p3"]
-If nothing matches, return an empty array: []
-`;
-
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": process.env.FRONTEND_URL,
-      "X-Title": "Verde Atelier WhatsApp",
-    },
-    body: JSON.stringify({
-      model: "poolside/laguna-m.1:free",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userText },
-      ],
-    }),
-  });
-
-  const data = await response.json();
-  const text = data.choices?.[0]?.message?.content ?? "[]";
-
-  try {
-    return JSON.parse(text.replace(/```json|```/g, "").trim());
-  } catch {
-    return [];
-  }
-}
-
-async function aiFallback(userText, step) {
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": process.env.FRONTEND_URL,
-      "X-Title": "Verde Atelier WhatsApp",
-    },
-    body: JSON.stringify({
-      model: "poolside/laguna-m.1:free",
-      messages: [
-        {
-          role: "system",
-          content: `You are a friendly WhatsApp shopping assistant for Verde Atelier, a high-end sustainable fashion store. The customer is currently at step: "${step}". Respond warmly and helpfully in 1-2 short sentences, guiding them back to the conversation.`,
-        },
-        { role: "user", content: userText },
-      ],
-    }),
-  });
-
-  const data = await response.json();
-  return data.choices?.[0]?.message?.content ?? "Sorry, I didn't quite get that. Could you try again? 😊";
-}
-
-function formatOrderSlip(order, items) {
-  const itemLines = items.map(i =>
-    `  • ${i.product_name} (${i.size}, ${i.color}) x${i.quantity} — R${(i.line_total / 100).toFixed(2)}`
-  ).join("\n");
-
-  return `✅ *Order Confirmed!*\n\n📦 *Order #${order.id}*\n\n*Items:*\n${itemLines}\n\n*Total:* R${(order.amount / 100).toFixed(2)}\n\n*Shipping to:*\n${order.first_name} ${order.last_name}\n${order.address}\n${order.city}, ${order.postal}\n\nThank you for shopping with Verde Atelier 🌿\nWe'll be in touch with your tracking details soon.`;
-}
-
-const PRODUCTS = [
-  { id: "p1", name: "Aero Knit Runner", category: "Footwear", price: 190, sizes: ["7","8","9","10","11","12"], colors: ["Forest","Sand","Onyx"] },
-  { id: "p2", name: "Terra Hike Shell", category: "Outdoor", price: 260, sizes: ["S","M","L","XL"], colors: ["Moss","Slate","Bone"] },
-  { id: "p3", name: "Linen Flight Shirt", category: "Apparel", price: 120, sizes: ["S","M","L","XL"], colors: ["Sage","Clay","White"] },
-  { id: "p4", name: "Summit Crossbody", category: "Accessories", price: 140, sizes: ["One Size"], colors: ["Olive","Black","Mist"] },
-  { id: "p5", name: "Drift Wide Leg Pant", category: "Apparel", price: 170, sizes: ["XS","S","M","L"], colors: ["Stone","Deep Green","Charcoal"] },
-  { id: "p6", name: "Pulse Trail Mid", category: "Footwear", price: 220, sizes: ["7","8","9","10","11","12"], colors: ["Pine","Granite","Sand"] },
-  { id: "p7", name: "Studio Heavy Tee", category: "Apparel", price: 68, sizes: ["S","M","L","XL"], colors: ["Ivory","Forest","Ink"] },
-  { id: "p8", name: "Atlas Weekend Duffel", category: "Accessories", price: 240, sizes: ["40L"], colors: ["Olive","Black"] },
-  { id: "p9", name: "Meridian Leather Boot", category: "Footwear", price: 1350, sizes: ["7","8","9","10","11","12"], colors: ["Tan","Dark Brown","Black"] },
-  { id: "p10", name: "Altitude Insulated Jacket", category: "Outdoor", price: 1800, sizes: ["S","M","L","XL"], colors: ["Forest","Slate","Black"] },
-  { id: "p11", name: "Vela Structured Tote", category: "Accessories", price: 1200, sizes: ["One Size"], colors: ["Camel","Black","Forest"] },
-  { id: "p12", name: "Canyon Technical Trouser", category: "Outdoor", price: 1100, sizes: ["S","M","L","XL"], colors: ["Stone","Slate","Olive"] },
-  { id: "p13", name: "Grove Merino Crew", category: "Apparel", price: 380, sizes: ["S","M","L","XL"], colors: ["Sage","Oat","Charcoal"] },
-  { id: "p14", name: "Field Canvas Cap", category: "Accessories", price: 85, sizes: ["One Size"], colors: ["Khaki","Olive","Black"] },
-  { id: "p15", name: "Form Zip Hoodie", category: "Apparel", price: 210, sizes: ["S","M","L","XL","XXL"], colors: ["Ivory","Moss","Ink"] },
-  { id: "p16", name: "Base Trail Short", category: "Outdoor", price: 145, sizes: ["S","M","L","XL"], colors: ["Pine","Sand","Black"] },
-  { id: "p17", name: "Cord Slim Trouser", category: "Apparel", price: 195, sizes: ["28","30","32","34","36"], colors: ["Rust","Forest","Navy"] },
-  { id: "p18", name: "Peak Softshell Vest", category: "Outdoor", price: 320, sizes: ["S","M","L","XL"], colors: ["Slate","Moss","Black"] },
-];
-
-// ✅ WhatsApp webhook verification
+// ── WhatsApp webhook verification ─────────────────────────────
 app.get("/api/whatsapp/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -759,7 +724,7 @@ app.get("/api/whatsapp/webhook", (req, res) => {
   }
 });
 
-// ✅ WhatsApp webhook — receives incoming messages
+// ── WhatsApp webhook — receives incoming messages ─────────────
 app.post("/api/whatsapp/webhook", async (req, res) => {
   const body = req.body;
   res.sendStatus(200); // respond immediately so Meta doesn't retry
@@ -790,15 +755,15 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
 
     // ── GREETING ──────────────────────────────────
     if (step === "greeting" || ["hi","hello","hey","start","menu"].includes(text.toLowerCase())) {
-      await sendMessage(from,
+      await sendWAMessage(from,
         `👋 Welcome to *Verde Atelier* — thoughtfully made fashion.\n\nI'm your personal shopping assistant. You can:\n\n• Tell me what you're looking for (e.g. "I want something warm under R500")\n• Or browse by category below 👇`
       );
-      await sendList(from, "What would you like to explore?", "Browse categories", [
+      await sendList(from, "What would you like to explore?", "Browse", [
         { title: "👟 Footwear", description: "Runners, boots, trail shoes" },
         { title: "👕 Apparel", description: "Shirts, pants, hoodies, tees" },
         { title: "🎒 Accessories", description: "Bags, caps, crossbodies" },
         { title: "🏔️ Outdoor", description: "Jackets, shells, trail gear" },
-        { title: "✨ Recommend me something", description: "Let AI pick for you" },
+        { title: "✨ Recommend me", description: "Let AI pick for you" },
       ]);
       await saveSession(from, "browse", data);
       return;
@@ -822,7 +787,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
         await sendList(
           from,
           `Here's our *${matchedCategory}* collection 👇\n\nTap a product to select it:`,
-          "View products",
+          "View",
           categoryProducts.map(p => ({ title: p.name, description: `R${p.price}` }))
         );
         await saveSession(from, "pick_product", { ...data, category: matchedCategory });
@@ -830,44 +795,44 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       }
 
       if (lower.includes("recommend") || lower.includes("✨")) {
-        await sendMessage(from, "Tell me what you're looking for — budget, style, occasion, anything! 😊");
+        await sendWAMessage(from, "Tell me what you're looking for — budget, style, occasion, anything! 😊");
         await saveSession(from, "ai_search", data);
         return;
       }
 
       // Free text — use AI to match
-      const matchedIds = await aiProductMatch(text, PRODUCTS);
+      const matchedIds = await aiProductMatch(text);
       if (matchedIds.length > 0) {
         const matched = PRODUCTS.filter(p => matchedIds.includes(p.id));
         await sendList(
           from,
           `Here's what I found for you 🌿\n\nTap a product to select it:`,
-          "View products",
+          "View",
           matched.map(p => ({ title: p.name, description: `R${p.price}` }))
         );
         await saveSession(from, "pick_product", data);
       } else {
         const fallback = await aiFallback(text, step);
-        await sendMessage(from, fallback);
+        await sendWAMessage(from, fallback);
       }
       return;
     }
 
     // ── AI SEARCH ─────────────────────────────────
     if (step === "ai_search") {
-      const matchedIds = await aiProductMatch(text, PRODUCTS);
+      const matchedIds = await aiProductMatch(text);
       if (matchedIds.length > 0) {
         const matched = PRODUCTS.filter(p => matchedIds.includes(p.id));
         await sendList(
           from,
           `Here's what I'd recommend for you 🌿`,
-          "View products",
+          "View",
           matched.map(p => ({ title: p.name, description: `R${p.price}` }))
         );
         await saveSession(from, "pick_product", data);
       } else {
-        await sendMessage(from, "Hmm, I couldn't find an exact match. Let me show you our full range instead.");
-        await sendList(from, "Browse by category:", "Choose category", [
+        await sendWAMessage(from, "Hmm, I couldn't find an exact match. Let me show you our full range instead.");
+        await sendList(from, "Browse by category:", "Browse", [
           { title: "👟 Footwear", description: "Runners, boots, trail shoes" },
           { title: "👕 Apparel", description: "Shirts, pants, hoodies, tees" },
           { title: "🎒 Accessories", description: "Bags, caps, crossbodies" },
@@ -883,18 +848,29 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       const product = PRODUCTS.find(p => p.name.toLowerCase() === text.toLowerCase());
       if (!product) {
         const fallback = await aiFallback(text, step);
-        await sendMessage(from, fallback);
+        await sendWAMessage(from, fallback);
         return;
       }
 
       if (product.sizes.length === 1) {
-        await saveSession(from, "pick_color", { ...data, productId: product.id, productName: product.name, productPrice: product.price, size: product.sizes[0] });
-        await sendList(from, `Great choice! 🎉 Now pick a colour for your *${product.name}*:`, "Choose colour",
+        await saveSession(from, "pick_color", {
+          ...data,
+          productId: product.id,
+          productName: product.name,
+          productPrice: product.price,
+          size: product.sizes[0],
+        });
+        await sendList(from, `Great choice! 🎉 Now pick a colour for your *${product.name}*:`, "Colour",
           product.colors.map(c => ({ title: c }))
         );
       } else {
-        await saveSession(from, "pick_size", { ...data, productId: product.id, productName: product.name, productPrice: product.price });
-        await sendList(from, `Great choice! 🎉 What size would you like for *${product.name}*?`, "Choose size",
+        await saveSession(from, "pick_size", {
+          ...data,
+          productId: product.id,
+          productName: product.name,
+          productPrice: product.price,
+        });
+        await sendList(from, `Great choice! 🎉 What size would you like for *${product.name}*?`, "Size",
           product.sizes.map(s => ({ title: s }))
         );
       }
@@ -907,12 +883,12 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       const size = product?.sizes.find(s => s.toLowerCase() === text.toLowerCase());
 
       if (!size) {
-        await sendMessage(from, `Please choose a valid size: ${product?.sizes.join(", ")}`);
+        await sendWAMessage(from, `Please choose a valid size: ${product?.sizes.join(", ")}`);
         return;
       }
 
       await saveSession(from, "pick_color", { ...data, size });
-      await sendList(from, `Perfect! Now choose a colour:`, "Choose colour",
+      await sendList(from, `Perfect! Now choose a colour:`, "Colour",
         product.colors.map(c => ({ title: c }))
       );
       return;
@@ -924,7 +900,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       const color = product?.colors.find(c => c.toLowerCase() === text.toLowerCase());
 
       if (!color) {
-        await sendMessage(from, `Please choose a valid colour: ${product?.colors.join(", ")}`);
+        await sendWAMessage(from, `Please choose a valid colour: ${product?.colors.join(", ")}`);
         return;
       }
 
@@ -937,43 +913,43 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     if (step === "pick_quantity") {
       const qty = parseInt(text);
       if (isNaN(qty) || qty < 1 || qty > 10) {
-        await sendMessage(from, "Please enter a quantity between 1 and 10.");
+        await sendWAMessage(from, "Please enter a quantity between 1 and 10.");
         return;
       }
 
       await saveSession(from, "get_firstname", { ...data, quantity: qty });
-      await sendMessage(from, "Almost there! I just need your shipping details. 📦\n\nWhat's your *first name*?");
+      await sendWAMessage(from, "Almost there! I just need your shipping details. 📦\n\nWhat's your *first name*?");
       return;
     }
 
     // ── SHIPPING DETAILS ──────────────────────────
     if (step === "get_firstname") {
       await saveSession(from, "get_lastname", { ...data, firstName: text });
-      await sendMessage(from, `Nice to meet you, ${text}! 😊 What's your *last name*?`);
+      await sendWAMessage(from, `Nice to meet you, ${text}! 😊 What's your *last name*?`);
       return;
     }
 
     if (step === "get_lastname") {
       await saveSession(from, "get_address", { ...data, lastName: text });
-      await sendMessage(from, "What's your *street address*?");
+      await sendWAMessage(from, "What's your *street address*?");
       return;
     }
 
     if (step === "get_address") {
       await saveSession(from, "get_city", { ...data, address: text });
-      await sendMessage(from, "What *city* are you in?");
+      await sendWAMessage(from, "What *city* are you in?");
       return;
     }
 
     if (step === "get_city") {
       await saveSession(from, "get_postal", { ...data, city: text });
-      await sendMessage(from, "What's your *postal code*?");
+      await sendWAMessage(from, "What's your *postal code*?");
       return;
     }
 
     if (step === "get_postal") {
       await saveSession(from, "get_email", { ...data, postal: text });
-      await sendMessage(from, "Last one! What's your *email address*? (We'll send your order confirmation here)");
+      await sendWAMessage(from, "Last one! What's your *email address*? (We'll send your order confirmation here)");
       return;
     }
 
@@ -984,7 +960,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       const product = PRODUCTS.find(p => p.id === updatedData.productId);
       const lineTotal = (product?.price ?? 0) * updatedData.quantity;
 
-      await sendMessage(from,
+      await sendWAMessage(from,
         `📋 *Order Summary*\n\n` +
         `*Product:* ${updatedData.productName}\n` +
         `*Size:* ${updatedData.size}\n` +
@@ -1006,7 +982,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     if (step === "confirm_order") {
       if (text.toLowerCase().includes("cancel") || text.includes("❌")) {
         await saveSession(from, "greeting", {});
-        await sendMessage(from, "No problem! Your order has been cancelled. Type *hi* to start again anytime. 😊");
+        await sendWAMessage(from, "No problem! Your order has been cancelled. Type *hi* to start again anytime. 😊");
         return;
       }
 
@@ -1014,7 +990,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
         const product = PRODUCTS.find(p => p.id === data.productId);
         const lineTotal = (product?.price ?? 0) * data.quantity;
 
-        await sendMessage(from, "Creating your payment link... ⏳");
+        await sendWAMessage(from, "Creating your payment link... ⏳");
 
         const checkoutRes = await fetch("https://payments.yoco.com/api/checkouts", {
           method: "POST",
@@ -1034,7 +1010,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
         const checkoutData = await checkoutRes.json();
 
         if (!checkoutRes.ok) {
-          await sendMessage(from, "Sorry, I couldn't create your payment link. Please try again or visit our website.");
+          await sendWAMessage(from, "Sorry, I couldn't create your payment link. Please try again or visit our website.");
           return;
         }
 
@@ -1071,7 +1047,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
           yocoId: checkoutData.id,
         });
 
-        await sendMessage(from,
+        await sendWAMessage(from,
           `🎉 *Your payment link is ready!*\n\n` +
           `👉 ${checkoutData.redirectUrl}\n\n` +
           `This link is secure and powered by Yoco. Once you've paid, I'll send you your order confirmation right here. 🌿`
@@ -1080,13 +1056,13 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       }
 
       const fallback = await aiFallback(text, step);
-      await sendMessage(from, fallback);
+      await sendWAMessage(from, fallback);
       return;
     }
 
     // ── AWAITING PAYMENT ──────────────────────────
     if (step === "awaiting_payment") {
-      await sendMessage(from,
+      await sendWAMessage(from,
         `Your order is still waiting for payment. 😊\n\nUse the link I sent you to complete your purchase.\n\nType *cancel* if you'd like to start over.`
       );
       return;
@@ -1094,7 +1070,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
 
     // ── GLOBAL FALLBACK ───────────────────────────
     const fallback = await aiFallback(text, step);
-    await sendMessage(from, fallback);
+    await sendWAMessage(from, fallback);
 
   } catch (error) {
     console.error("❌ WhatsApp bot error:", error);
