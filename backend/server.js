@@ -726,7 +726,7 @@ app.get("/api/whatsapp/webhook", (req, res) => {
 });
 
 // ── WhatsApp webhook — receives incoming messages ─────────────
-app.post("/api/whatsapp/webhook", async (req, res) => {
+app.post("/api/whatsapp/webhook", express.json(), async (req, res) => {
   res.sendStatus(200);
   console.log("🟢 WHATSAPP HIT — body keys:", Object.keys(req.body || {}));
   console.log("🟢 FULL BODY:", JSON.stringify(req.body));
