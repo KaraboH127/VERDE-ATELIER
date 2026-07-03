@@ -7,12 +7,12 @@ import { createClient } from "@supabase/supabase-js";
 import { Resend } from "resend";
 import twilio from "twilio";
 
+dotenv.config();
+
 const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
-
-dotenv.config();
 
 const app = express();
 app.use(cors());
