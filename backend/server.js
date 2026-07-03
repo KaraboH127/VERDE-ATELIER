@@ -469,6 +469,7 @@ app.post(
 // ✅ express.json() applies to everything below
 app.use(express.json());
 
+console.log("🚀 Server routes loaded — WhatsApp bot v2");
 // ── Create checkout ────────────────────────────────────────────
 app.post("/api/create-checkout", async (req, res) => {
   const { amount, firstName, lastName, address, city, postal, email, items } = req.body;
