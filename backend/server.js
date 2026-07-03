@@ -729,6 +729,10 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
   const body = req.body;
   res.sendStatus(200); // respond immediately so Meta doesn't retry
 
+  // ✅ Add this immediately after res.sendStatus(200) -- Debug
+  console.log("📥 Raw webhook body:", JSON.stringify(body, null, 2));
+  //End of debug
+
   try {
     const entry = body.entry?.[0];
     const change = entry?.changes?.[0];
