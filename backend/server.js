@@ -10,6 +10,8 @@ dotenv.config();
 
 const app = express();
 app.use(cors());
+// ✅ express.json() applies to everything below
+app.use(express.json());
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -466,8 +468,6 @@ app.post(
   }
 );
 
-// ✅ express.json() applies to everything below
-app.use(express.json());
 
 console.log("🚀 Server routes loaded — WhatsApp bot v2");
 // ── Create checkout ────────────────────────────────────────────
