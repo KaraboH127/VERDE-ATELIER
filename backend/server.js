@@ -5,6 +5,12 @@ import dotenv from "dotenv";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
 import { Resend } from "resend";
+import twilio from "twilio";
+
+const twilioClient = twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
 
 dotenv.config();
 
@@ -437,9 +443,14 @@ app.post(
             .eq("data->>yocoId", checkoutId)
             .single();
 
-          if (whatsappSession) {
+            if (whatsappSession) {
             const slip = formatOrderSlip(updatedOrder, paidOrderItems);
-            await sendWAMessage(whatsappSession.phone, slip);
+            // ✅ Use Twilio to send the slip
+            await twilioClient.messages.create({
+              from: `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`,
+              to: `whatsapp:${whatsappSession.phone}`,
+              body: slip,
+            });
             await saveSession(whatsappSession.phone, "greeting", {});
             console.log("📲 WhatsApp order slip sent to:", whatsappSession.phone);
           }
@@ -730,6 +741,360 @@ app.post("/api/whatsapp/webhook", express.json(), async (req, res) => {
   res.sendStatus(200);
   console.log("🟢 WHATSAPP HIT — body keys:", Object.keys(req.body || {}));
   console.log("🟢 FULL BODY:", JSON.stringify(req.body));
+});
+
+// ── Twilio WhatsApp webhook ────────────────────────────────────
+app.post("/api/twilio/webhook", express.urlencoded({ extended: false }), async (req, res) => {
+  // Twilio sends form data, not JSON
+  const from = req.body.From?.replace("whatsapp:", ""); // e.g. +27648000276
+  const text = (req.body.Body ?? "").trim();
+
+  console.log(`📲 Twilio message from ${from}: ${text}`);
+
+  // Helper to send a reply via Twilio
+  async function reply(message) {
+    await twilioClient.messages.create({
+      from: `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`,
+      to: `whatsapp:${from}`,
+      body: message,
+    });
+  }
+
+  // Always respond 200 to Twilio immediately
+  res.sendStatus(200);
+
+  try {
+    const session = await getSession(from);
+    const step = session.step;
+    const data = session.data ?? {};
+
+    // ── GREETING ──────────────────────────────────
+    if (step === "greeting" || ["hi","hello","hey","start","menu"].includes(text.toLowerCase())) {
+      await reply(
+        `👋 Welcome to *Verde Atelier* — thoughtfully made fashion.\n\nI'm your personal shopping assistant.\n\nReply with a category to browse:\n\n1️⃣ Footwear\n2️⃣ Apparel\n3️⃣ Accessories\n4️⃣ Outdoor\n✨ Recommend me something\n\nOr just tell me what you're looking for!`
+      );
+      await saveSession(from, "browse", data);
+      return;
+    }
+
+    // ── BROWSE / CATEGORY SELECTION ───────────────
+    if (step === "browse") {
+      const lower = text.toLowerCase();
+
+      const categoryMap = {
+        "1": "Footwear", "footwear": "Footwear",
+        "2": "Apparel", "apparel": "Apparel",
+        "3": "Accessories", "accessories": "Accessories",
+        "4": "Outdoor", "outdoor": "Outdoor",
+      };
+
+      const matchedCategory = Object.entries(categoryMap).find(([key]) => lower === key)?.[1];
+
+      if (matchedCategory) {
+        const categoryProducts = PRODUCTS.filter(p => p.category === matchedCategory);
+        const productList = categoryProducts
+          .map((p, i) => `${i + 1}. ${p.name} — R${p.price}`)
+          .join("\n");
+
+        await reply(`Here's our *${matchedCategory}* collection 👇\n\n${productList}\n\nReply with the product name or number to select it.`);
+        await saveSession(from, "pick_product", { ...data, category: matchedCategory, categoryProducts: categoryProducts.map(p => p.id) });
+        return;
+      }
+
+      if (lower.includes("recommend") || lower.includes("✨") || lower === "5") {
+        await reply("Tell me what you're looking for — budget, style, occasion, anything! 😊");
+        await saveSession(from, "ai_search", data);
+        return;
+      }
+
+      // Free text — use AI to match
+      const matchedIds = await aiProductMatch(text);
+      if (matchedIds.length > 0) {
+        const matched = PRODUCTS.filter(p => matchedIds.includes(p.id));
+        const productList = matched.map((p, i) => `${i + 1}. ${p.name} — R${p.price}`).join("\n");
+        await reply(`Here's what I found for you 🌿\n\n${productList}\n\nReply with the product name or number to select it.`);
+        await saveSession(from, "pick_product", { ...data, categoryProducts: matched.map(p => p.id) });
+      } else {
+        const fallback = await aiFallback(text, step);
+        await reply(fallback);
+      }
+      return;
+    }
+
+    // ── AI SEARCH ─────────────────────────────────
+    if (step === "ai_search") {
+      const matchedIds = await aiProductMatch(text);
+      if (matchedIds.length > 0) {
+        const matched = PRODUCTS.filter(p => matchedIds.includes(p.id));
+        const productList = matched.map((p, i) => `${i + 1}. ${p.name} — R${p.price}`).join("\n");
+        await reply(`Here's what I'd recommend for you 🌿\n\n${productList}\n\nReply with the product name or number to select it.`);
+        await saveSession(from, "pick_product", { ...data, categoryProducts: matched.map(p => p.id) });
+      } else {
+        await reply("Hmm, I couldn't find a match. Try browsing by category:\n\n1️⃣ Footwear\n2️⃣ Apparel\n3️⃣ Accessories\n4️⃣ Outdoor");
+        await saveSession(from, "browse", data);
+      }
+      return;
+    }
+
+    // ── PICK PRODUCT ──────────────────────────────
+    if (step === "pick_product") {
+      // Customer can reply with number or product name
+      const categoryProducts = (data.categoryProducts ?? [])
+        .map(id => PRODUCTS.find(p => p.id === id))
+        .filter(Boolean);
+
+      let product = null;
+
+      // Try number selection first
+      const num = parseInt(text);
+      if (!isNaN(num) && num >= 1 && num <= categoryProducts.length) {
+        product = categoryProducts[num - 1];
+      } else {
+        // Try name match
+        product = PRODUCTS.find(p => p.name.toLowerCase() === text.toLowerCase());
+      }
+
+      if (!product) {
+        const fallback = await aiFallback(text, step);
+        await reply(fallback);
+        return;
+      }
+
+      if (product.sizes.length === 1) {
+        await saveSession(from, "pick_color", {
+          ...data,
+          productId: product.id,
+          productName: product.name,
+          productPrice: product.price,
+          size: product.sizes[0],
+        });
+        const colorList = product.colors.map((c, i) => `${i + 1}. ${c}`).join("\n");
+        await reply(`Great choice! 🎉 *${product.name}*\n\nNow pick a colour:\n\n${colorList}`);
+      } else {
+        await saveSession(from, "pick_size", {
+          ...data,
+          productId: product.id,
+          productName: product.name,
+          productPrice: product.price,
+        });
+        const sizeList = product.sizes.map((s, i) => `${i + 1}. ${s}`).join("\n");
+        await reply(`Great choice! 🎉 *${product.name}*\n\nWhat size would you like?\n\n${sizeList}`);
+      }
+      return;
+    }
+
+    // ── PICK SIZE ─────────────────────────────────
+    if (step === "pick_size") {
+      const product = PRODUCTS.find(p => p.id === data.productId);
+      const num = parseInt(text);
+      let size = null;
+
+      if (!isNaN(num) && num >= 1 && num <= product.sizes.length) {
+        size = product.sizes[num - 1];
+      } else {
+        size = product?.sizes.find(s => s.toLowerCase() === text.toLowerCase());
+      }
+
+      if (!size) {
+        const sizeList = product.sizes.map((s, i) => `${i + 1}. ${s}`).join("\n");
+        await reply(`Please choose a valid size:\n\n${sizeList}`);
+        return;
+      }
+
+      await saveSession(from, "pick_color", { ...data, size });
+      const colorList = product.colors.map((c, i) => `${i + 1}. ${c}`).join("\n");
+      await reply(`Perfect! Now choose a colour:\n\n${colorList}`);
+      return;
+    }
+
+    // ── PICK COLOUR ───────────────────────────────
+    if (step === "pick_color") {
+      const product = PRODUCTS.find(p => p.id === data.productId);
+      const num = parseInt(text);
+      let color = null;
+
+      if (!isNaN(num) && num >= 1 && num <= product.colors.length) {
+        color = product.colors[num - 1];
+      } else {
+        color = product?.colors.find(c => c.toLowerCase() === text.toLowerCase());
+      }
+
+      if (!color) {
+        const colorList = product.colors.map((c, i) => `${i + 1}. ${c}`).join("\n");
+        await reply(`Please choose a valid colour:\n\n${colorList}`);
+        return;
+      }
+
+      await saveSession(from, "pick_quantity", { ...data, color });
+      await reply("How many would you like? Reply with a number (1–10).");
+      return;
+    }
+
+    // ── PICK QUANTITY ─────────────────────────────
+    if (step === "pick_quantity") {
+      const qty = parseInt(text);
+      if (isNaN(qty) || qty < 1 || qty > 10) {
+        await reply("Please reply with a number between 1 and 10.");
+        return;
+      }
+
+      await saveSession(from, "get_firstname", { ...data, quantity: qty });
+      await reply("Almost there! I just need your shipping details. 📦\n\nWhat's your *first name*?");
+      return;
+    }
+
+    // ── SHIPPING DETAILS ──────────────────────────
+    if (step === "get_firstname") {
+      await saveSession(from, "get_lastname", { ...data, firstName: text });
+      await reply(`Nice to meet you, ${text}! 😊 What's your *last name*?`);
+      return;
+    }
+
+    if (step === "get_lastname") {
+      await saveSession(from, "get_address", { ...data, lastName: text });
+      await reply("What's your *street address*?");
+      return;
+    }
+
+    if (step === "get_address") {
+      await saveSession(from, "get_city", { ...data, address: text });
+      await reply("What *city* are you in?");
+      return;
+    }
+
+    if (step === "get_city") {
+      await saveSession(from, "get_postal", { ...data, city: text });
+      await reply("What's your *postal code*?");
+      return;
+    }
+
+    if (step === "get_postal") {
+      await saveSession(from, "get_email", { ...data, postal: text });
+      await reply("Last one! What's your *email address*? (We'll send your order confirmation here)");
+      return;
+    }
+
+    if (step === "get_email") {
+      const updatedData = { ...data, email: text };
+      await saveSession(from, "confirm_order", updatedData);
+
+      const product = PRODUCTS.find(p => p.id === updatedData.productId);
+      const lineTotal = (product?.price ?? 0) * updatedData.quantity;
+
+      await reply(
+        `📋 *Order Summary*\n\n` +
+        `*Product:* ${updatedData.productName}\n` +
+        `*Size:* ${updatedData.size}\n` +
+        `*Colour:* ${updatedData.color}\n` +
+        `*Quantity:* ${updatedData.quantity}\n` +
+        `*Price:* R${lineTotal.toFixed(2)}\n\n` +
+        `*Shipping to:*\n` +
+        `${updatedData.firstName} ${updatedData.lastName}\n` +
+        `${updatedData.address}\n` +
+        `${updatedData.city}, ${updatedData.postal}\n` +
+        `${updatedData.email}\n\n` +
+        `Reply *yes* to confirm and get your payment link, or *cancel* to start over.`
+      );
+      return;
+    }
+
+    // ── CONFIRM ORDER ─────────────────────────────
+    if (step === "confirm_order") {
+      if (text.toLowerCase() === "cancel") {
+        await saveSession(from, "greeting", {});
+        await reply("No problem! Your order has been cancelled. Reply *hi* to start again anytime. 😊");
+        return;
+      }
+
+      if (text.toLowerCase() === "yes") {
+        const product = PRODUCTS.find(p => p.id === data.productId);
+        const lineTotal = (product?.price ?? 0) * data.quantity;
+
+        await reply("Creating your payment link... ⏳");
+
+        const checkoutRes = await fetch("https://payments.yoco.com/api/checkouts", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${process.env.YOCO_SECRET_KEY}`,
+          },
+          body: JSON.stringify({
+            amount: lineTotal * 100,
+            currency: "ZAR",
+            successUrl: `${process.env.FRONTEND_URL}/order-success`,
+            cancelUrl: `${process.env.FRONTEND_URL}`,
+            failureUrl: `${process.env.FRONTEND_URL}`,
+          }),
+        });
+
+        const checkoutData = await checkoutRes.json();
+
+        if (!checkoutRes.ok) {
+          await reply("Sorry, I couldn't create your payment link. Please try again or visit our website.");
+          return;
+        }
+
+        const { data: newOrder } = await supabase
+          .from("orders")
+          .insert({
+            first_name: data.firstName,
+            last_name: data.lastName,
+            address: data.address,
+            city: data.city,
+            postal: data.postal,
+            email: data.email,
+            yoco_order_id: checkoutData.id,
+            amount: lineTotal * 100,
+            status: "pending",
+          })
+          .select()
+          .single();
+
+        await supabase.from("order_items").insert({
+          order_id: newOrder.id,
+          product_id: data.productId,
+          product_name: data.productName,
+          price: (product?.price ?? 0) * 100,
+          quantity: data.quantity,
+          line_total: lineTotal * 100,
+          color: data.color,
+          size: data.size,
+        });
+
+        await saveSession(from, "awaiting_payment", {
+          ...data,
+          orderId: newOrder.id,
+          yocoId: checkoutData.id,
+        });
+
+        await reply(
+          `🎉 *Your payment link is ready!*\n\n` +
+          `👉 ${checkoutData.redirectUrl}\n\n` +
+          `This link is secure and powered by Yoco. Once you've paid, I'll send your order confirmation right here. 🌿`
+        );
+        return;
+      }
+
+      const fallback = await aiFallback(text, step);
+      await reply(fallback);
+      return;
+    }
+
+    // ── AWAITING PAYMENT ──────────────────────────
+    if (step === "awaiting_payment") {
+      await reply(
+        `Your order is still waiting for payment. 😊\n\nUse the link I sent you to complete your purchase.\n\nReply *cancel* to start over.`
+      );
+      return;
+    }
+
+    // ── GLOBAL FALLBACK ───────────────────────────
+    const fallback = await aiFallback(text, step);
+    await reply(fallback);
+
+  } catch (error) {
+    console.error("❌ Twilio bot error:", JSON.stringify(error, Object.getOwnPropertyNames(error)));
+  }
 });
 
 const PORT = process.env.PORT || 3001;
