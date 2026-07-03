@@ -747,9 +747,24 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
       text = message.interactive?.button_reply?.title ?? message.interactive?.list_reply?.title ?? "";
     }
 
+    //Debug
     console.log(`📲 [${from}] ${text}`);
 
-    const session = await getSession(from);
+      let session;
+      try {
+        session = await getSession(from);
+        console.log("📋 Session retrieved:", JSON.stringify(session));
+      } catch (err) {
+        console.error("❌ getSession failed:", JSON.stringify(err, Object.getOwnPropertyNames(err)));
+        return;
+      }
+
+      if (!session) {
+        console.error("❌ Session is null for:", from);
+        return;
+      }
+
+      //End of debug
     const step = session.step;
     const data = session.data ?? {};
 
