@@ -1073,7 +1073,7 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     await sendWAMessage(from, fallback);
 
   } catch (error) {
-    console.error("❌ WhatsApp bot error:", error);
+    console.error("❌ WhatsApp bot error:", JSON.stringify(error, Object.getOwnPropertyNames(error)));
   }
 });
 
