@@ -739,7 +739,16 @@ app.post("/api/whatsapp/webhook", async (req, res) => {
     const value = change?.value;
     const message = value?.messages?.[0];
 
-    if (!message) return;
+    // ✅ Add this immediately after res.sendStatus(200) -- Debug
+    console.log("📨 Extracted message:", JSON.stringify(message));
+    //End of debug
+
+    // Debug
+    if (!message) {
+      console.log("⚠️ No message found in payload — skipping");
+      return;
+    }
+    //End of debug
 
     const from = message.from;
     const msgType = message.type;
