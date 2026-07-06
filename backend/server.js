@@ -16,6 +16,133 @@ const twilioClient = twilio(
 
 const app = express();
 app.use(cors());
+
+// ── Yoco webhook FIRST (needs raw body) ───────────────────────
+app.post(
+  "/api/webhook",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    const secret = process.env.YOCO_WEBHOOK_SECRET;
+    const signature = req.headers["x-yoco-signature"];
+
+    if (secret && signature) {
+      const expected = crypto
+        .createHmac("sha256", secret)
+        .update(req.body)
+        .digest("hex");
+
+      if (signature !== expected) {
+        console.log("❌ Invalid webhook signature");
+        return res.status(401).send("Invalid signature");
+      }
+    }
+
+    const event = JSON.parse(req.body.toString());
+    console.log("✅ Webhook received:", event.type);
+
+    // 💰 Payment succeeded
+    if (event.type === "payment.succeeded") {
+      const checkoutId = event.payload?.metadata?.checkoutId; // ✅ fixed — was event.payload?.id
+      console.log("💰 Payment succeeded for checkoutId:", checkoutId);
+
+      let updatedOrder = null;
+
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        const { data: updatedOrders, error: updateError } = await supabase
+          .from("orders")
+          .update({ status: "paid" })
+          .eq("yoco_order_id", checkoutId)
+          .select();
+
+        if (updateError) {
+          console.error("❌ Supabase update error:", updateError);
+          break;
+        }
+
+        if (updatedOrders?.length > 0) {
+          updatedOrder = updatedOrders[0];
+          console.log(`✅ Order marked as paid on attempt ${attempt}:`, checkoutId);
+          break;
+        }
+
+        console.warn(`⏳ Attempt ${attempt}: order not found yet, retrying in 1s...`);
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+
+      if (!updatedOrder) {
+        console.error("❌ Order still not found after all retries:", checkoutId);
+      } else {
+        const { data: paidOrderItems, error: itemsError } = await supabase
+          .from("order_items")
+          .select("*")
+          .eq("order_id", updatedOrder.id);
+
+        if (itemsError) {
+          console.error("❌ Could not fetch order items:", itemsError);
+        } else {
+          // ✅ Decrement inventory for each item
+          for (const item of paidOrderItems) {
+            const { error: stockError } = await supabase.rpc("decrement_stock", {
+              p_product_id: item.product_id,
+              p_size: item.size,
+              p_color: item.color,
+              p_quantity: item.quantity,
+            });
+
+            if (stockError) {
+              console.error("❌ Stock decrement error:", stockError);
+            } else {
+              console.log(`📦 Stock decremented for ${item.product_name} (${item.size}, ${item.color})`);
+            }
+          }
+
+          // ✅ Send confirmation email
+          await sendConfirmationEmail(updatedOrder, paidOrderItems);
+
+          // ✅ Send WhatsApp order slip if this order came from WhatsApp
+          // ✅ Fixed — renamed variable to avoid collision with paidOrderItems above
+          const { data: whatsappSession } = await supabase
+            .from("whatsapp_sessions")
+            .select("*")
+            .eq("data->>yocoId", checkoutId)
+            .single();
+
+            if (whatsappSession) {
+            const slip = formatOrderSlip(updatedOrder, paidOrderItems);
+            // ✅ Use Twilio to send the slip
+            await twilioClient.messages.create({
+              from: `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`,
+              to: `whatsapp:${whatsappSession.phone}`,
+              body: slip,
+            });
+            await saveSession(whatsappSession.phone, "greeting", {});
+            console.log("📲 WhatsApp order slip sent to:", whatsappSession.phone);
+          }
+        }
+      }
+    }
+
+    // ❌ Payment failed
+    if (event.type === "payment.failed") {
+      const checkoutId = event.payload?.metadata?.checkoutId; // ✅ fixed — was event.payload?.id
+      console.log("❌ Payment failed for checkoutId:", checkoutId);
+
+      const { error } = await supabase
+        .from("orders")
+        .update({ status: "failed" })
+        .eq("yoco_order_id", checkoutId);
+
+      if (error) {
+        console.error("❌ Supabase update error:", error);
+      } else {
+        console.log("🗑️ Order marked as failed for:", checkoutId);
+      }
+    }
+
+    res.sendStatus(200);
+  }
+);
+
 // ✅ express.json() applies to everything below
 app.use(express.json());
 
@@ -352,133 +479,6 @@ async function sendConfirmationEmail(order, items) {
     console.log("📧 Confirmation email sent to:", order.email);
   }
 }
-
-// ── Yoco webhook FIRST (needs raw body) ───────────────────────
-app.post(
-  "/api/webhook",
-  express.raw({ type: "application/json" }),
-  async (req, res) => {
-    const secret = process.env.YOCO_WEBHOOK_SECRET;
-    const signature = req.headers["x-yoco-signature"];
-
-    if (secret && signature) {
-      const expected = crypto
-        .createHmac("sha256", secret)
-        .update(req.body)
-        .digest("hex");
-
-      if (signature !== expected) {
-        console.log("❌ Invalid webhook signature");
-        return res.status(401).send("Invalid signature");
-      }
-    }
-
-    const event = JSON.parse(req.body.toString());
-    console.log("✅ Webhook received:", event.type);
-
-    // 💰 Payment succeeded
-    if (event.type === "payment.succeeded") {
-      const checkoutId = event.payload?.metadata?.checkoutId; // ✅ fixed — was event.payload?.id
-      console.log("💰 Payment succeeded for checkoutId:", checkoutId);
-
-      let updatedOrder = null;
-
-      for (let attempt = 1; attempt <= 5; attempt++) {
-        const { data: updatedOrders, error: updateError } = await supabase
-          .from("orders")
-          .update({ status: "paid" })
-          .eq("yoco_order_id", checkoutId)
-          .select();
-
-        if (updateError) {
-          console.error("❌ Supabase update error:", updateError);
-          break;
-        }
-
-        if (updatedOrders?.length > 0) {
-          updatedOrder = updatedOrders[0];
-          console.log(`✅ Order marked as paid on attempt ${attempt}:`, checkoutId);
-          break;
-        }
-
-        console.warn(`⏳ Attempt ${attempt}: order not found yet, retrying in 1s...`);
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-      }
-
-      if (!updatedOrder) {
-        console.error("❌ Order still not found after all retries:", checkoutId);
-      } else {
-        const { data: paidOrderItems, error: itemsError } = await supabase
-          .from("order_items")
-          .select("*")
-          .eq("order_id", updatedOrder.id);
-
-        if (itemsError) {
-          console.error("❌ Could not fetch order items:", itemsError);
-        } else {
-          // ✅ Decrement inventory for each item
-          for (const item of paidOrderItems) {
-            const { error: stockError } = await supabase.rpc("decrement_stock", {
-              p_product_id: item.product_id,
-              p_size: item.size,
-              p_color: item.color,
-              p_quantity: item.quantity,
-            });
-
-            if (stockError) {
-              console.error("❌ Stock decrement error:", stockError);
-            } else {
-              console.log(`📦 Stock decremented for ${item.product_name} (${item.size}, ${item.color})`);
-            }
-          }
-
-          // ✅ Send confirmation email
-          await sendConfirmationEmail(updatedOrder, paidOrderItems);
-
-          // ✅ Send WhatsApp order slip if this order came from WhatsApp
-          // ✅ Fixed — renamed variable to avoid collision with paidOrderItems above
-          const { data: whatsappSession } = await supabase
-            .from("whatsapp_sessions")
-            .select("*")
-            .eq("data->>yocoId", checkoutId)
-            .single();
-
-            if (whatsappSession) {
-            const slip = formatOrderSlip(updatedOrder, paidOrderItems);
-            // ✅ Use Twilio to send the slip
-            await twilioClient.messages.create({
-              from: `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`,
-              to: `whatsapp:${whatsappSession.phone}`,
-              body: slip,
-            });
-            await saveSession(whatsappSession.phone, "greeting", {});
-            console.log("📲 WhatsApp order slip sent to:", whatsappSession.phone);
-          }
-        }
-      }
-    }
-
-    // ❌ Payment failed
-    if (event.type === "payment.failed") {
-      const checkoutId = event.payload?.metadata?.checkoutId; // ✅ fixed — was event.payload?.id
-      console.log("❌ Payment failed for checkoutId:", checkoutId);
-
-      const { error } = await supabase
-        .from("orders")
-        .update({ status: "failed" })
-        .eq("yoco_order_id", checkoutId);
-
-      if (error) {
-        console.error("❌ Supabase update error:", error);
-      } else {
-        console.log("🗑️ Order marked as failed for:", checkoutId);
-      }
-    }
-
-    res.sendStatus(200);
-  }
-);
-
 
 console.log("🚀 Server routes loaded — WhatsApp bot v2");
 // ── Create checkout ────────────────────────────────────────────
