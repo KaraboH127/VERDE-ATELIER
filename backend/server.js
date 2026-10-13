@@ -297,7 +297,7 @@ If nothing matches, return an empty array: []
         "X-Title": "Verde Atelier WhatsApp",
       },
       body: JSON.stringify({
-        model: "poolside/laguna-m.1:free",
+        model: "nvidia/nemotron-3.5-lightning:free",
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userText },
@@ -324,7 +324,7 @@ async function aiFallback(userText, step) {
         "X-Title": "Verde Atelier WhatsApp",
       },
       body: JSON.stringify({
-        model: "poolside/laguna-m.1:free",
+        model: "nvidia/nemotron-3.5-lightning:free",
         messages: [
           {
             role: "system",
@@ -591,7 +591,7 @@ Rules:
         "X-Title": "Verde Atelier",
       },
       body: JSON.stringify({
-        model: "poolside/laguna-m.1:free",
+        model: "nvidia/nemotron-3.5-lightning:free",
         messages: [{ role: "system", content: systemPrompt }, ...messages],
       }),
     });
@@ -664,7 +664,7 @@ If asked something unrelated to the business data, politely redirect.
         "X-Title": "Verde Atelier Admin",
       },
       body: JSON.stringify({
-        model: "poolside/laguna-m.1:free",
+        model: "nvidia/nemotron-3.5-lightning:free",
         messages: [{ role: "system", content: systemPrompt }, ...messages],
       }),
     });
