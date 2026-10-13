@@ -899,7 +899,7 @@ export function AdminPage() {
                 </button>
               </div>
               <p className="mt-2 text-center text-xs text-neutral-400">
-                Powered by Laguna M1 · Your data stays private
+                Powered by nvidia/nemotron-3.5-lightning · Your data stays private
               </p>
             </div>
           </div>
