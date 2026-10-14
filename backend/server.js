@@ -645,7 +645,7 @@ Rules:
         "X-Title": "Verde Atelier",
       },
       body: JSON.stringify({
-        model: "poolside/laguna-m.1:free",
+        model: "nvidia/nemotron-3.5-lightning:free",
         stream: true, // ✅ enable streaming
         messages: [
           { role: "system", content: systemPrompt },
