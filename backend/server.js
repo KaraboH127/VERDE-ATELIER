@@ -611,6 +611,76 @@ Rules:
   }
 });
 
+// ✅ Streaming recommendation route
+app.post("/api/recommend/stream", async (req, res) => {
+  const { messages, products, orderStats } = req.body;
+
+  const systemPrompt = `
+You are a helpful shopping assistant for Verde Atelier, a high-end sustainable fashion store.
+Your job is to recommend products to customers based on what they're looking for.
+
+Here is the full product catalogue:
+${JSON.stringify(products, null, 2)}
+
+Here is real sales data showing how many times each product has been ordered (use this to identify what's popular):
+${JSON.stringify(orderStats, null, 2)}
+
+Rules:
+- Only recommend products that exist in the catalogue above
+- When recommending a product, always mention its name, price (in Rands), and one or two reasons why it suits the customer
+- If a product is popular in the sales data, mention that customers love it
+- Keep responses friendly, concise, and helpful
+- If the customer's request is vague, ask one clarifying question
+- Never make up products that aren't in the catalogue
+- Format recommendations clearly, one product per line
+`;
+
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": process.env.FRONTEND_URL,
+        "X-Title": "Verde Atelier",
+      },
+      body: JSON.stringify({
+        model: "poolside/laguna-m.1:free",
+        stream: true, // ✅ enable streaming
+        messages: [
+          { role: "system", content: systemPrompt },
+          ...messages,
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      return res.status(500).json({ error: "AI service unavailable" });
+    }
+
+    // ✅ Pipe OpenRouter's SSE stream directly to the client
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+      res.write(chunk); // ✅ forward each chunk to the frontend as it arrives
+    }
+
+    res.end();
+
+  } catch (error) {
+    console.error("❌ Stream route error:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // ── Admin — fetch all orders + items ──────────────────────────
 app.post("/api/admin/data", async (req, res) => {
   const { token } = req.body;
