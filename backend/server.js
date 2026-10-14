@@ -14,6 +14,13 @@ const twilioClient = twilio(
   process.env.TWILIO_AUTH_TOKEN
 );
 
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
+const resend = new Resend(process.env.RESEND_API_KEY);
+
 const app = express();
 app.use(cors());
 
@@ -145,13 +152,6 @@ app.post(
 
 // ✅ express.json() applies to everything below
 app.use(express.json());
-
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
-
-const resend = new Resend(process.env.RESEND_API_KEY);
 
 // ── Product catalogue (kept in sync with frontend store.ts) ───
 const PRODUCTS = [
